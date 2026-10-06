@@ -17,6 +17,7 @@ spec:
       containers:
         - name: migrate
           image: ghcr.io/syntara-orchestration/execution-plane:latest
+          imagePullPolicy: IfNotPresent
           command: [alembic, -c, alembic.ini, upgrade, head]
           env:
             - name: DATABASE_URL

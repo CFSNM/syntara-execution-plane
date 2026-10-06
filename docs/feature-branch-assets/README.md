@@ -1,10 +1,17 @@
 # Historical feature-branch assets
 
-These files are retained as source context from `feat/ANSTRAT-1803`. Their
-deployment and Konflux scripts predate the service split: they configure an
-in-process worker, run EP migrations from the AO backend, or write directly to
-EP tables. Do not apply these manifests or use these scripts for the isolated
-service topology.
+[`tools/ci/konflux-prepare-execution-plane.sh`](../../tools/ci/konflux-prepare-execution-plane.sh)
+is the Konflux/aap-dev path that deploys the standalone Execution Plane
+**without changing the AO operator**. After `deploy-ao`, it applies dispatcher
+RBAC, creates an `execution_plane` database on `ao-postgres`, applies
+[`deploy/kubernetes/base`](../../deploy/kubernetes/base/) using the image built
+from this repo's [`Containerfile`](../../Containerfile) (tag
+`localhost:5001/<namespace>/ep:<AAP_VERSION>`), and registers the Kind cluster
+through the EP API.
 
-Use the current standalone manifests in [`deploy/kubernetes/base`](../../deploy/kubernetes/base/)
-and follow the combined-service procedure in [`kind-demo-runbook.md`](../kind-demo-runbook.md).
+The remaining files (`execution-plane-worker.yaml`, hello-world helpers) still
+reflect the pre-split in-process worker and should not be applied as-is.
+
+Target-cluster dispatcher RBAC lives in
+[`deploy/kubernetes/execution-target/rbac.yaml`](../../deploy/kubernetes/execution-target/rbac.yaml).
+The combined-service procedure is in [`kind-demo-runbook.md`](../kind-demo-runbook.md).
