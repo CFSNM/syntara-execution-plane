@@ -306,8 +306,13 @@ spec:
                 tar -C "${EP_DIR}" --exclude='.git' -czf - . \
                   | ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" \
                     "tar -xzf - -C \$HOME/syntara-execution-plane"
-                ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" \
-                  "test -f \$HOME/syntara-execution-plane/Containerfile"
+                ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" "
+                  set -euo pipefail
+                  EP=\$HOME/syntara-execution-plane
+                  test -f \"\${EP}/Containerfile\"
+                  test -f \"\${EP}/tools/ci/konflux-build-ep-image.sh\"
+                  test -f \"\${EP}/tools/ci/konflux-prepare-execution-plane.sh\"
+                "
 
       - name: deploy-ao
         runAfter:
@@ -391,6 +396,7 @@ spec:
                   BUILD_SCRIPT=\$HOME/syntara-execution-plane/${BUILD_SCRIPT}
                   if [ ! -f \"\${BUILD_SCRIPT}\" ]; then
                     echo \"ERROR: \${BUILD_SCRIPT} missing; stage-ep-source must copy Execution Plane first\" >&2
+                    ls -la \$HOME/syntara-execution-plane/tools/ci >&2 || ls -la \$HOME/syntara-execution-plane >&2 || true
                     exit 1
                   fi
                   bash \"\${BUILD_SCRIPT}\"
