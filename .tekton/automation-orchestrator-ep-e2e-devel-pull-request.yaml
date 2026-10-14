@@ -16,7 +16,7 @@ metadata:
     appstudio.openshift.io/application: ansible-automation-orchestrator-devel
     appstudio.openshift.io/component: ansible-automation-orchestrator-execution-plane-devel
     pipelines.appstudio.openshift.io/type: test
-  name: automation-orchestrator-ep-kind-prepare-devel-pull-request
+  name: automation-orchestrator-ep-e2e-devel-pull-request
   namespace: nexus-tenant
 spec:
   timeouts:
@@ -362,7 +362,8 @@ spec:
           description: |
             Build ./Containerfile on the Kind VM and publish
             localhost:5001/<AO_NAMESPACE>/ep:<AAP_VERSION> so
-            prepare-execution-plane can deploy it. Replaces aap-dev addons/ep.
+            prepare-execution-plane can deploy it. aap-dev has no EP addon;
+            this task builds the image from this repository instead.
           params:
             - name: ssh-credentials-secret
               type: string

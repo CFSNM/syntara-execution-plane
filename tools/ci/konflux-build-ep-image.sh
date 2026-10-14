@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Build this repository's Containerfile and put the image on the aap-dev Kind
-# cluster so konflux-prepare-execution-plane.sh can deploy it.
+# Build this repository's Containerfile and put the image on the Kind cluster
+# created by aap-dev's deploy-ao, so konflux-prepare-execution-plane.sh can
+# deploy it.
 #
-# After deploy-ao the Kind node can pull localhost:5001/<ns>/ep:<AAP_VERSION>.
-# This script replaces aap-dev addons/ep: it builds ./Containerfile, pushes to
-# that registry, and also loads the image into the Kind node.
+# aap-dev does not ship an Execution Plane addon. After deploy-ao, this script
+# builds ./Containerfile, pushes localhost:5001/<ns>/ep:<AAP_VERSION>, and
+# loads the image into the Kind node.
 set -euo pipefail
 
 export PATH="${HOME}/aap-dev/bin:${PATH}"
@@ -79,19 +80,19 @@ fi
 
 "${RUNTIME}" build -f "${CONTAINERFILE}" -t "${EP_IMAGE}" "${REPO_ROOT}"
 
-pushed=0
-loaded=0
+pushed=false
+loaded=false
 if _push_to_local_registry; then
-  pushed=1
+  pushed=true
 else
   echo "WARNING: push of ${EP_IMAGE} failed; Kind load may still succeed" >&2
 fi
 if _load_into_kind_node; then
-  loaded=1
+  loaded=true
 else
   echo "WARNING: Kind load of ${EP_IMAGE} failed; registry pull may still succeed" >&2
 fi
-if [[ "${pushed}" -eq 0 && "${loaded}" -eq 0 ]]; then
+if [[ "${pushed}" == false && "${loaded}" == false ]]; then
   echo "ERROR: ${EP_IMAGE} was built but not published to the registry or Kind node" >&2
   exit 1
 fi

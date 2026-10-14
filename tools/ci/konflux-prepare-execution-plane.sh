@@ -136,12 +136,16 @@ _ensure_db_secret() {
   local migrator_pw runtime_pw host
   host="ao-postgres.${AO_NAMESPACE}.svc"
   if kubectl get secret execution-plane-db -n "${NAMESPACE}" >/dev/null 2>&1; then
+    echo "=== Reuse existing execution-plane-db secret ==="
     migrator_pw=$(_secret_data execution-plane-db "${NAMESPACE}" migrator-password)
     runtime_pw=$(_secret_data execution-plane-db "${NAMESPACE}" runtime-password)
-  else
-    migrator_pw=$(openssl rand -hex 24)
-    runtime_pw=$(openssl rand -hex 24)
+    printf '%s' "${migrator_pw}" > "${WORK_DIR}/migrator.pw"
+    printf '%s' "${runtime_pw}" > "${WORK_DIR}/runtime.pw"
+    chmod 600 "${WORK_DIR}/migrator.pw" "${WORK_DIR}/runtime.pw"
+    return 0
   fi
+  migrator_pw=$(openssl rand -hex 24)
+  runtime_pw=$(openssl rand -hex 24)
   printf '%s' "${migrator_pw}" > "${WORK_DIR}/migrator.pw"
   printf '%s' "${runtime_pw}" > "${WORK_DIR}/runtime.pw"
   chmod 600 "${WORK_DIR}/migrator.pw" "${WORK_DIR}/runtime.pw"
