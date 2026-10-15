@@ -340,9 +340,9 @@ sqlalchemy==2.0.52 \
     #   alembic
     #   execution-plane
     #   sqlmodel
-sqlmodel==0.0.42 \
-    --hash=sha256:9ecec2b6aa4c2aa58da39d2572e7bef4373419dcd6ec52973c07de7be2b1c516 \
-    --hash=sha256:a732dab1a40e5cbd6ac250cf2b12e8d9b1bf1a47edf27c34d612f359e8875c63
+sqlmodel==0.0.48 \
+    --hash=sha256:5582e87e845e23bb1179a7d8b11a4f5e441b4494528a41ee2fe1d129ffe91543 \
+    --hash=sha256:8d389bf735b03a17508e93e888c13a30ef1ddca22dd8e57add12317401e4112e
     # via execution-plane
 starlette==1.7.0 \
     --hash=sha256:67f8e99895493dd2911a03f11314af6ceebeae4e704bb9f43dfc6a9db151c93e \
