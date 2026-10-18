@@ -31,7 +31,7 @@ Matching rules are in the
 [ExecutionTarget Reconciler](../executiontarget-reconciler.md). Label
 vocabulary is in [labels.md](../labels.md). Cluster and default-target
 invariants are in
-[cluster-and-target-registries.md](../cluster-and-target-registries.md).
+[cluster-and-target-services.md](../cluster-and-target-services.md).
 
 ## Incoming workload
 

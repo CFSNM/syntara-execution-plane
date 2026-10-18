@@ -3,7 +3,7 @@
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.store_base import StoreBase
-from execution_plane.work_store import WorkStore
+from execution_plane.work_item.work_item_store import WorkStore
 
 
 def test_database_stores_share_the_store_lifecycle_base() -> None:

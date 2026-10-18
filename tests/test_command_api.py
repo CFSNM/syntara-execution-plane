@@ -10,7 +10,7 @@ import pytest
 
 from execution_plane.api.auth import ServiceIdentity, get_service_identity
 from execution_plane.api.main import create_app
-from execution_plane.work_store import WorkStore
+from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.control import CancelCommand
 from execution_plane_client.commands.work import WorkExecute

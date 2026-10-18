@@ -17,7 +17,7 @@ from execution_plane_client.protocol import ResourceReference, TransportReceipt
 if TYPE_CHECKING:
     from execution_plane.config import EPSettings
     from execution_plane.models.completion_event import CompletionEvent
-    from execution_plane.work_store import WorkStore
+    from execution_plane.work_item import WorkItemService
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -50,20 +50,20 @@ class CompletionNotifier:
         if self._client is not None:
             await self._client.aclose()
 
-    async def run(self, store: WorkStore) -> None:
+    async def run(self, work_service: WorkItemService) -> None:
         """Continuously retry due outbox records; callback failure never loses results."""
         while True:
-            events = await store.get_pending_completion_events()
+            events = await work_service.get_pending_completion_events()
             if not events:
                 await asyncio.sleep(DELIVERY_POLL_SECONDS)
                 continue
             for event in events:
-                await self._deliver_one(store, event)
+                await self._deliver_one(work_service, event)
 
-    async def _deliver_one(self, store: WorkStore, event: CompletionEvent) -> None:
+    async def _deliver_one(self, work_service: WorkItemService, event: CompletionEvent) -> None:
         if self._client is None or self._url is None:
             logger.warning("Completion callback is not configured; retaining event", event_id=str(event.id))
-            await store.record_completion_event_attempt(
+            await work_service.record_completion_event_attempt(
                 event.id,
                 delivered=False,
                 error="completion callback is not configured",
@@ -102,7 +102,7 @@ class CompletionNotifier:
         except (httpx.HTTPError, ValueError) as exc:
             retry_after = min(MAX_RETRY_SECONDS, 2 ** min(event.attempts + 1, 8))
             retry_after = int(retry_after * secrets.SystemRandom().uniform(0.8, 1.2))
-            await store.record_completion_event_attempt(
+            await work_service.record_completion_event_attempt(
                 event.id,
                 delivered=False,
                 error=type(exc).__name__,
@@ -116,5 +116,5 @@ class CompletionNotifier:
                 error=type(exc).__name__,
             )
         else:
-            await store.record_completion_event_attempt(event.id, delivered=True)
+            await work_service.record_completion_event_attempt(event.id, delivered=True)
             logger.info("Completion event acknowledged by client", event_id=str(event.id))

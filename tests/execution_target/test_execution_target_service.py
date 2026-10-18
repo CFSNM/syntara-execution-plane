@@ -9,7 +9,7 @@ from typing import Self
 import pytest
 from sqlalchemy.pool import NullPool
 
-from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
+from execution_plane.execution_target.execution_target_service import ExecutionTargetService
 from execution_plane.execution_target.execution_target_store import (
     DefaultExecutionTargetError,
     ExecutionTargetNotFoundError,
@@ -124,11 +124,17 @@ class _Store:
         self.target = target
         self.delete_requested = False
         self.updated: dict[str, object] = {}
+        self.created: dict[str, object] = {}
+        self.get_kwargs: list[dict[str, object]] = []
+        self.marked_failed = False
+        self.finalized = False
 
-    async def create(self, *_: object, **__: object) -> ExecutionTarget:
+    async def create(self, *_: object, **kwargs: object) -> ExecutionTarget:
+        self.created = kwargs
         return self.target
 
-    async def get(self, _target_id: uuid.UUID) -> ExecutionTarget | None:
+    async def get(self, _target_id: uuid.UUID, **kwargs: object) -> ExecutionTarget | None:
+        self.get_kwargs.append(kwargs)
         return self.target
 
     async def list(self, **_: object) -> list[ExecutionTarget]:
@@ -139,7 +145,11 @@ class _Store:
         return self.target
 
     async def finalize_delete(self, _target_id: uuid.UUID) -> None:
-        self.delete_requested = True
+        self.finalized = True
+
+    async def mark_failed(self, _target_id: uuid.UUID, _updated_by: uuid.UUID) -> ExecutionTarget:
+        self.marked_failed = True
+        return self.target
 
     async def activate(self, _target_id: uuid.UUID, _updated_by: uuid.UUID) -> ExecutionTarget:
         return self.target
@@ -184,6 +194,33 @@ async def test_store_creates_target_with_audit_fields_and_owns_the_commit() -> N
 
 
 @pytest.mark.asyncio
+async def test_service_creates_target_with_identity_label_and_cleanses_user_labels() -> None:
+    target = _target()
+    cluster = _cluster()
+    cluster.status = ClusterStatus.ACTIVE
+    session = _Session()
+    session.cluster = cluster
+    store = ExecutionTargetStore("postgresql+asyncpg://localhost/syntara")
+    store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    service = ExecutionTargetService(store)
+
+    result = await service.create(
+        target.cluster_id,
+        target.name,
+        target.backend_type,
+        target.endpoint,
+        target.api_key,
+        is_default=False,
+        created_by=uuid.uuid4(),
+        placement=target.placement,
+        labels={"region": "eu-west", "_execution_target_id": "user-supplied", "_internal": "user-supplied"},
+    )
+
+    assert result.labels == {"region": "eu-west", "_execution_target_id": str(result.id)}
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_store_rejects_a_second_default_target_for_a_cluster() -> None:
     """Dropping the default lookup would permit duplicate protected targets."""
     existing_default = _target(is_default=True)
@@ -215,6 +252,7 @@ async def test_store_rolls_back_when_target_creation_cannot_commit() -> None:
     store = ExecutionTargetStore("postgresql+asyncpg://localhost/syntara")
     session = _Session(fail_commit=True)
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    placement = KubernetesPlacement(namespace="default")
 
     with pytest.raises(RuntimeError, match=_DATABASE_UNAVAILABLE):
         await store.create(
@@ -225,7 +263,7 @@ async def test_store_rolls_back_when_target_creation_cannot_commit() -> None:
             "secret",
             is_default=False,
             created_by=uuid.uuid4(),
-            placement=KubernetesPlacement(namespace="default"),
+            placement=placement,
         )
 
     assert session.rollbacks == 1
@@ -314,46 +352,47 @@ async def test_store_ignores_a_target_that_is_not_drained() -> None:
 
 
 @pytest.mark.asyncio
-async def test_registry_rejects_deletion_of_the_protected_default_target() -> None:
-    """Removing the registry guard would allow direct deletion of a default target."""
+async def test_service_rejects_deletion_of_the_protected_default_target() -> None:
+    """Removing the service guard would allow direct deletion of a default target."""
     target = _target(is_default=True)
     store = _Store(target)
-    registry = ExecutionTargetRegistry(store)  # type: ignore[arg-type]
+    service = ExecutionTargetService(store)  # type: ignore[arg-type]
 
     with pytest.raises(DefaultExecutionTargetError):
-        await registry.request_delete(target.id, uuid.uuid4())
+        await service.request_delete(target.id, uuid.uuid4())
 
     assert store.delete_requested is False
 
 
 @pytest.mark.asyncio
-async def test_registry_persists_target_drain_request() -> None:
+async def test_service_persists_target_drain_request() -> None:
     """Deletion persists DRAINING; the worker monitor owns finalization."""
     target = _target()
     store = _Store(target)
-    registry = ExecutionTargetRegistry(store)  # type: ignore[arg-type]
+    service = ExecutionTargetService(store)  # type: ignore[arg-type]
 
-    await registry.request_delete(target.id, uuid.uuid4())
+    await service.request_delete(target.id, uuid.uuid4())
 
     assert store.delete_requested is True
 
 
 @pytest.mark.asyncio
-async def test_registry_delegates_eligible_listing_without_a_database_session() -> None:
-    """Passing a session into the registry would break the store ownership boundary."""
+async def test_service_delegates_eligible_listing_without_a_database_session() -> None:
+    """Passing a session into the service would break the store ownership boundary."""
     target = _target(status=TargetStatus.ACTIVE)
-    registry = ExecutionTargetRegistry(_Store(target))  # type: ignore[arg-type]
+    service = ExecutionTargetService(_Store(target))  # type: ignore[arg-type]
 
-    assert await registry.list(cluster_id=target.cluster_id, eligible_only=True) == [target]
+    assert await service.list(cluster_id=target.cluster_id, eligible_only=True) == [target]
 
 
 @pytest.mark.asyncio
-async def test_registry_delegates_create_get_activate_and_update() -> None:
+async def test_service_delegates_create_get_activate_and_update() -> None:
     target = _target()
-    registry = ExecutionTargetRegistry(_Store(target))  # type: ignore[arg-type]
+    store = _Store(target)
+    service = ExecutionTargetService(store)  # type: ignore[arg-type]
 
     assert (
-        await registry.create(
+        await service.create(
             target.cluster_id,
             target.name,
             target.backend_type,
@@ -362,13 +401,17 @@ async def test_registry_delegates_create_get_activate_and_update() -> None:
             target.is_default,
             target.created_by,
             placement=KubernetesPlacement(namespace="execution"),
+            target_id=target.id,
         )
         is target
     )
-    assert await registry.get(target.id) is target
-    assert await registry.activate(target.id, uuid.uuid4()) is target
+    assert store.created["target_id"] == target.id
+    assert await service.get(target.id) is target
+    assert await service.get(target.id, include_secret=True) is target
+    assert store.get_kwargs[-1] == {"include_secret": True}
+    assert await service.activate(target.id, uuid.uuid4()) is target
     assert (
-        await registry.update(
+        await service.update(
             target.id,
             updated_by=uuid.uuid4(),
             name="renamed",
@@ -379,15 +422,47 @@ async def test_registry_delegates_create_get_activate_and_update() -> None:
 
 
 @pytest.mark.asyncio
-async def test_registry_rejects_deletion_of_an_unknown_target() -> None:
+async def test_service_update_replaces_user_labels_and_preserves_the_target_identity_label() -> None:
+    target = _target()
+    target.labels = {"_execution_target_id": str(target.id), "region": "old", "team": "old"}
+    store = ExecutionTargetStore("postgresql+asyncpg://localhost/syntara")
+    store._session_factory = _SessionFactory(_Session(result=_Result(target)))  # type: ignore[assignment]
+    service = ExecutionTargetService(store)
+
+    await service.update(
+        target.id,
+        updated_by=uuid.uuid4(),
+        labels={"region": "new", "_execution_target_id": "spoofed", "_internal": "spoofed"},
+    )
+
+    assert target.labels == {"_execution_target_id": str(target.id), "region": "new"}
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_service_delegates_drain_failure_and_finalization() -> None:
+    target = _target(status=TargetStatus.DRAINING)
+    store = _Store(target)
+    service = ExecutionTargetService(store)  # type: ignore[arg-type]
+    actor_id = uuid.uuid4()
+
+    assert await service.mark_failed(target.id, actor_id) is target
+    await service.finalize_delete(target.id)
+
+    assert store.marked_failed is True
+    assert store.finalized is True
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_deletion_of_an_unknown_target() -> None:
     class EmptyStore(_Store):
-        async def get(self, _target_id: uuid.UUID) -> ExecutionTarget | None:
+        async def get(self, _target_id: uuid.UUID, **_: object) -> ExecutionTarget | None:
             return None
 
-    registry = ExecutionTargetRegistry(EmptyStore(_target()))  # type: ignore[arg-type]
+    service = ExecutionTargetService(EmptyStore(_target()))  # type: ignore[arg-type]
 
     with pytest.raises(ExecutionTargetNotFoundError):
-        await registry.request_delete(uuid.uuid4(), uuid.uuid4())
+        await service.request_delete(uuid.uuid4(), uuid.uuid4())
 
 
 def test_store_accepts_a_pool_for_its_owned_engine() -> None:

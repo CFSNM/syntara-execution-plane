@@ -50,7 +50,7 @@ return or quarantine it; it must not delete the worker when one WorkItem ends.
 
 ## Current scheduler limits
 
-`WorkStore.claim_one()` still assigns the first active, project-eligible default
+`WorkItemService.reserve_one()` still claims the first active, project-eligible default
 target. The placement reconciler is constructed but is not yet used to rank or
 select targets. There is no capacity reservation, warm pool, concurrent
 dispatch, or WorkWatcher. One worker replica processes one item at a time for

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     import uuid
 
     from execution_plane.cluster.cluster_store import ClusterStore
-    from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
+    from execution_plane.execution_target.execution_target_service import ExecutionTargetService
     from execution_plane.models.execution_target import ExecutionTarget
     from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
@@ -82,18 +82,18 @@ class NoopDiscoveryMechanism:
         return DiscoveryResult.failed("No discovery mechanism is configured")
 
 
-class ClusterRegistry:
+class ClusterService:
     """Coordinate discovery and target registration without owning sessions."""
 
     def __init__(
         self,
         store: ClusterStore,
-        execution_target_registry: ExecutionTargetRegistry,
+        execution_target_service: ExecutionTargetService,
         discovery: DiscoveryMechanism,
     ) -> None:
-        """Use stores and registries for persistence and target creation."""
+        """Use a Store and target Service for persistence and target creation."""
         self._store = store
-        self._execution_target_registry = execution_target_registry
+        self._execution_target_service = execution_target_service
         self._discovery = discovery
 
     async def register(
@@ -129,7 +129,7 @@ class ClusterRegistry:
         ordered_targets = [defaults[0], *(target for target in result.targets if not target.is_default)]
         for target in ordered_targets:
             try:
-                created_target = await self._execution_target_registry.create(
+                created_target = await self._execution_target_service.create(
                     cluster_id=cluster.id,
                     name=target.name,
                     backend_type=target.backend_type,
@@ -139,7 +139,7 @@ class ClusterRegistry:
                     is_default=target.is_default,
                     created_by=created_by,
                 )
-                await self._execution_target_registry.activate(created_target.id, created_by)
+                await self._execution_target_service.activate(created_target.id, created_by)
             except Exception:  # noqa: BLE001
                 if target.is_default:
                     return await self._store.record_discovery_state(
@@ -192,7 +192,7 @@ class ClusterRegistry:
             project_ids=project_ids,
         )
         try:
-            target = await self._execution_target_registry.create(
+            target = await self._execution_target_service.create(
                 cluster_id=cluster.id,
                 name=name,
                 backend_type=BackendType.VANILLA_K8S,
@@ -202,7 +202,7 @@ class ClusterRegistry:
                 is_default=True,
                 created_by=created_by,
             )
-            await self._execution_target_registry.activate(target.id, created_by)
+            await self._execution_target_service.activate(target.id, created_by)
         except Exception:
             await self._store.record_discovery_state(
                 cluster.id, ClusterStatus.ERROR, "default target creation failed", created_by
@@ -229,7 +229,7 @@ class ClusterRegistry:
         )
         default_target = await self.get_default_target(cluster.id)
         if default_target is not None:
-            await self._execution_target_registry.reactivate(
+            await self._execution_target_service.reactivate(
                 default_target.id,
                 updated_by=updated_by,
                 endpoint=endpoint,
@@ -240,7 +240,7 @@ class ClusterRegistry:
 
     async def get_default_target(self, cluster_id: uuid.UUID) -> ExecutionTarget | None:
         """Return the default execution target for a cluster, or None if absent."""
-        targets = await self._execution_target_registry.list(cluster_id=cluster_id)
+        targets = await self._execution_target_service.list(cluster_id=cluster_id)
         return next((t for t in targets if t.is_default), None)
 
     async def sync_update(
@@ -251,6 +251,7 @@ class ClusterRegistry:
         name: str | None = None,
         endpoint: str | None = None,
         api_key: str | None = None,
+        ca_certificate: str | None = None,
         placement: ExecutionTargetPlacement | None = None,
         labels: dict[str, str] | None = None,
     ) -> None:
@@ -265,12 +266,13 @@ class ClusterRegistry:
             name=name,
             endpoint=endpoint,
             api_key=api_key,
+            ca_certificate=ca_certificate,
             labels=labels,
         )
         default_target = await self.get_default_target(cluster_id)
         if default_target is None:
             return
-        await self._execution_target_registry.update(
+        await self._execution_target_service.update(
             default_target.id,
             updated_by=updated_by,
             name=name,
@@ -279,13 +281,37 @@ class ClusterRegistry:
             placement=placement,
         )
 
-    async def get(self, cluster_id: uuid.UUID) -> Cluster | None:
+    async def get(self, cluster_id: uuid.UUID, *, include_secret: bool = False) -> Cluster | None:
         """Return a Cluster through the persistence boundary."""
-        return await self._store.get(cluster_id)
+        return await self._store.get(cluster_id, include_secret=include_secret)
 
     async def get_by_name(self, name: str) -> Cluster | None:
         """Return a Cluster by name through the persistence boundary."""
         return await self._store.get_by_name(name)
+
+    async def get_by_source(self, client_id: str, integration_id: uuid.UUID) -> Cluster | None:
+        """Return a Cluster by its stable source identity."""
+        return await self._store.get_by_source(client_id, integration_id)
+
+    async def update_source_binding(
+        self,
+        cluster_id: uuid.UUID,
+        *,
+        client_id: str,
+        integration_id: uuid.UUID,
+        revision: int,
+        project_ids: list[uuid.UUID] | None,
+        ca_certificate: str | None = None,
+    ) -> Cluster:
+        """Persist stable source identity, observed revision, and project grants."""
+        return await self._store.update_source_binding(
+            cluster_id,
+            client_id=client_id,
+            integration_id=integration_id,
+            revision=revision,
+            project_ids=project_ids,
+            ca_certificate=ca_certificate,
+        )
 
     async def list(self, *, status: ClusterStatus | None = None, enabled: bool | None = None) -> list[Cluster]:
         """List Clusters for administrative or recovery workflows."""
@@ -294,3 +320,26 @@ class ClusterRegistry:
     async def request_delete(self, cluster_id: uuid.UUID, updated_by: uuid.UUID) -> Cluster:
         """Disable a Cluster and mark its targets as DRAINING."""
         return await self._store.request_delete(cluster_id, updated_by)
+
+    async def mark_drain_failed(
+        self,
+        cluster_id: uuid.UUID,
+        status_message: str,
+        updated_by: uuid.UUID,
+    ) -> Cluster:
+        """Record an irrecoverable Cluster drain failure."""
+        return await self._store.mark_drain_failed(cluster_id, status_message, updated_by)
+
+    async def finalize_delete(self, cluster_id: uuid.UUID) -> None:
+        """Delete a drained Cluster when finalization is safe."""
+        await self._store.finalize_delete(cluster_id)
+
+    async def record_discovery_state(
+        self,
+        cluster_id: uuid.UUID,
+        status: ClusterStatus,
+        status_message: str | None,
+        updated_by: uuid.UUID,
+    ) -> Cluster:
+        """Persist registration or discovery state on an existing Cluster."""
+        return await self._store.record_discovery_state(cluster_id, status, status_message, updated_by)

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     )
 
 
-class ExecutionTargetRegistry(Protocol):
+class ExecutionTargetService(Protocol):
     """Enumerate ExecutionTargets. Each snapshot carries an interned Cluster backref."""
 
     async def list(self) -> Sequence[ExecutionTargetSnapshot]:

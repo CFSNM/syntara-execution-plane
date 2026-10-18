@@ -1,7 +1,7 @@
 # Execution Plane: Work Executor
 
 The Work Executor is the entry point for work submission into the EP. The Consumer
-(Syntara or AWX) calls it to create a `WorkItem` and persist it to the [`WorkStore`](work-store.md).
+(Syntara or AWX) calls it to create a `WorkItem` and persist it through the [`WorkItemService`](work-store.md).
 
 See [logical_components.md](logical_components.md) for how it fits into the logical decomposition of the Execution Plane service.
 
@@ -10,7 +10,7 @@ See [logical_components.md](logical_components.md) for how it fits into the logi
 ## Responsibility
 
 Accepts a work submission from the Consumer — including a caller-generated UUID and the
-work payload — validates it, and writes a `WorkItem` record to the [`WorkStore`](work-store.md) in
+work payload — validates it, and writes a `WorkItem` record through the [`WorkItemService`](work-store.md) in
 `PENDING` status. Returns to the Consumer immediately; execution is asynchronous.
 
 The UUID is caller-owned. The Consumer generates it before submitting so it can track
@@ -19,7 +19,7 @@ the work item without waiting for a response.
 The async execution path after submission: Work Scheduler claims the `WorkItem` and
 dispatches it via a `WorkerManager`; on successful start the Scheduler hands off to a
 `WorkWatcher` and moves on. The `WorkWatcher` monitors the running job and writes the
-result to the `WorkStore`, which triggers the Completion Notifier to fire the Consumer's
+result to the `WorkItemService`, which triggers the Completion Notifier to fire the Consumer's
 callback. See [logical_components.md](logical_components.md) for the full picture.
 
 ---
@@ -28,11 +28,10 @@ callback. See [logical_components.md](logical_components.md) for the full pictur
 
 How the Consumer reaches the Work Executor is not settled. Options:
 
-**Current (temporary):** AO writes directly to the [`WorkStore`](work-store.md) — bypassing any Work
-Executor API and inserting `WorkItem` rows directly into Postgres, then sends a
+**Current:** AO submits a command to EP; the Work command handler calls the
+[`WorkItemService`](work-store.md), which persists the `WorkItem` and sends a
 `pg_notify` on `execution_plane_work_items` to wake the EP worker immediately rather
-than waiting for the poll interval. This works for AO because it shares the database,
-but it cannot extend to AWX/Controller, which cannot share a direct DB connection with EP.
+than waiting for the poll interval.
 
 **REST API (`POST /submit`):** EP exposes an HTTP endpoint. Both AO and Controller submit
 work via HTTP. This fits the model of EP as an independently deployed service with its
@@ -53,12 +52,11 @@ designed.
 
 ## Validation
 
-Currently, the Consumer writes directly to the `WorkItem` Postgres schema. The schema
-itself enforces structure — a malformed payload is rejected at the DB layer. No
-separate validation step exists.
+Currently, the Work command handler validates the command payload before the Service
+persists it. The database schema also enforces the persisted structure.
 
 Once a submission interface (REST API, queue) sits between the Consumer and the
-[`WorkStore`](work-store.md), the EP receives formally unstructured data. At that point the Work Executor
+[`WorkItemService`](work-store.md), the EP receives formally unstructured data. At that point the Work Executor
 must validate the payload against known bounds before persisting it: required fields,
 type constraints, and size limits.
 

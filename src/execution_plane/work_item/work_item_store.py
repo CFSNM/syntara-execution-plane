@@ -21,6 +21,7 @@ from execution_plane.models.execution_target import ExecutionTarget
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.store_base import StoreBase
 from execution_plane.store_errors import StaleClaimError
+from execution_plane.work_item.errors import DuplicateWorkItemError, WorkItemNotFoundError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -28,22 +29,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 _NOTIFY_CHANNEL = "execution_plane_work_items"
-
-
-class WorkItemNotFoundError(LookupError):
-    """Raised when a lifecycle transition targets an unknown work item."""
-
-    def __init__(self, item_id: uuid.UUID) -> None:
-        """Identify the missing work item."""
-        super().__init__(f"Work item {item_id} does not exist")
-
-
-class DuplicateWorkItemError(ValueError):
-    """Raised when a client submits a work item ID that already exists."""
-
-    def __init__(self, item_id: uuid.UUID) -> None:
-        """Identify the conflicting ID."""
-        super().__init__(f"Work item {item_id} already exists")
 
 
 class WorkStore(StoreBase):
@@ -322,7 +307,7 @@ class WorkStore(StoreBase):
                 if resource_uid is not None:
                     item.backend_resource_uid = resource_uid
                 item.resource_cleanup_status = cleanup_status
-                item.resource_cleanup_error = cleanup_error[:1000] if cleanup_error else None
+                item.resource_cleanup_error = cleanup_error
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -415,7 +400,7 @@ class WorkStore(StoreBase):
                 item.status = WorkItemStatus.RECONCILIATION_REQUIRED
                 now = datetime.now(UTC)
                 item.result = {
-                    "error": reason[:1000],
+                    "error": reason,
                     "error_type": "WorkloadOutcomeUnknownError",
                     "cancellation_requested": cancel_requested,
                 }

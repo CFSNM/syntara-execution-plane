@@ -120,7 +120,7 @@ execution boundaries.
 
 The registration and lifecycle behavior follows the Cluster and
 ExecutionTarget model described in
-[`cluster-and-target-registries.md`](cluster-and-target-registries.md):
+[`cluster-and-target-services.md`](cluster-and-target-services.md):
 
 - the Cluster is unavailable until it is registered and usable;
 - the ExecutionTarget is unavailable until it is active;
@@ -211,7 +211,7 @@ vanilla Kubernetes Worker Manager.
 It also coordinates with the existing Execution Plane work for:
 
 - [AAP-92715 — Work Store](https://redhat.atlassian.net/browse/AAP-92715)
-- [AAP-92716 — Cluster/ExecutionTarget registries](https://redhat.atlassian.net/browse/AAP-92716)
+- [AAP-92716 — Cluster/ExecutionTarget Services](https://redhat.atlassian.net/browse/AAP-92716)
 - [AAP-92721 — Pool/ExecutionTarget Reconciler](https://redhat.atlassian.net/browse/AAP-92721)
 - [AAP-92722 — Work Scheduler](https://redhat.atlassian.net/browse/AAP-92722)
 - [AAP-92727 — Registration Provider](https://redhat.atlassian.net/browse/AAP-92727)

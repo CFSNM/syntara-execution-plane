@@ -11,22 +11,22 @@ import asyncpg  # type: ignore[import-untyped]
 import structlog
 
 from execution_plane.cluster.binding_reconciler import run_cluster_binding_reconciler
+from execution_plane.cluster.cluster_service import ClusterService, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.completion_notifier.notifier import CompletionNotifier
 from execution_plane.config import get_ep_settings, to_asyncpg_url
 from execution_plane.drain_monitor import DrainMonitor
+from execution_plane.execution_target.execution_target_service import ExecutionTargetService
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.execution_target_reconciler.adapters import (
     build_placement_resolver,
-    cluster_snapshot_from_model,
-    execution_target_snapshot_from_model,
 )
 from execution_plane.execution_target_reconciler.exceptions import UnknownBackendTypeError
-from execution_plane.execution_target_reconciler.placement import PlacementResolver, WorkerManagerRegistry
-from execution_plane.execution_target_reconciler.types import WorkRequirements
+from execution_plane.execution_target_reconciler.placement import WorkerManagerRegistry
 from execution_plane.models.execution_target import BackendType
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.work_store import WorkStore
+from execution_plane.work_item import WorkItemService
+from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane.worker_manager.vanilla_k8s.manager import (
     NodeExecutionError,
     RetryableDispatchError,
@@ -39,8 +39,6 @@ from execution_plane.worker_manager.vanilla_k8s.reconciler import run_orphan_pol
 
 if TYPE_CHECKING:
     from execution_plane.config import EPSettings
-    from execution_plane.models.cluster import Cluster
-    from execution_plane.models.execution_target import ExecutionTarget
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -48,37 +46,10 @@ POLL_INTERVAL_SECONDS = 5
 NOTIFY_CHANNEL = "execution_plane_work_items"
 
 
-def _requirements_for(item: WorkItem) -> WorkRequirements:
-    """Extract resolver requirements from the versioned work payload."""
-    selectors: dict[str, str] = item.payload.get("selectors", {})
-    if not isinstance(selectors, dict):
-        selectors = {}
-    workload_type = item.payload.get("workload_type")
-    return WorkRequirements(
-        selectors=selectors,
-        workload_type=workload_type if isinstance(workload_type, str) else None,
-    )
-
-
-async def _target_is_eligible(
-    cluster: Cluster,
-    target: ExecutionTarget,
-    placement_resolver: PlacementResolver,
-    requirements: WorkRequirements,
-) -> bool:
-    """Revalidate a database target against the reconciler's current eligibility rules."""
-    cluster_snapshot = cluster_snapshot_from_model(cluster)
-    return await placement_resolver.target_is_eligible(
-        cluster_snapshot,
-        execution_target_snapshot_from_model(target, cluster_snapshot),
-        requirements,
-    )
-
-
 async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinct persistence transitions
     item: WorkItem,
-    store: WorkStore,
-    target_store: ExecutionTargetStore,
+    work_service: WorkItemService,
+    target_service: ExecutionTargetService,
     worker_managers: WorkerManagerRegistry,
     settings: EPSettings,
 ) -> None:
@@ -90,7 +61,7 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
         return
     claim_generation = item.claim_generation
     if item.execution_target_id is None:
-        await store.set_result(
+        await work_service.set_result(
             item.id,
             {"error": "No execution target was assigned", "error_type": "TargetUnavailable"},
             WorkItemStatus.FAILED,
@@ -98,9 +69,9 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
             claim_generation=claim_generation,
         )
         return
-    target = await target_store.get(item.execution_target_id)
+    target = await target_service.get(item.execution_target_id)
     if target is None:
-        await store.set_result(
+        await work_service.set_result(
             item.id,
             {"error": "Assigned execution target no longer exists", "error_type": "TargetUnavailable"},
             WorkItemStatus.FAILED,
@@ -111,7 +82,7 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
     try:
         workload_manager = worker_managers.get(target.backend_type)
     except UnknownBackendTypeError:
-        await store.set_result(
+        await work_service.set_result(
             item.id,
             {
                 "error": f"No WorkerManager is registered for backend '{target.backend_type.value}'",
@@ -122,7 +93,7 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
             claim_generation=claim_generation,
         )
         return
-    if item.status is not WorkItemStatus.CLAIMED or not await store.mark_dispatched(
+    if item.status is not WorkItemStatus.CLAIMED or not await work_service.mark_dispatched(
         item.id,
         claim_owner_id=claim_owner_id,
         claim_generation=claim_generation,
@@ -133,14 +104,14 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
         logger.info("Node execution result persisted", work_item_id=wi_id)
     except RetryableDispatchError as exc:
         await asyncio.sleep(settings.dispatch_retry_backoff_seconds)
-        await store.requeue_pre_execute_failure(
+        await work_service.requeue_pre_execute_failure(
             item.id,
             claim_owner_id=claim_owner_id,
             claim_generation=claim_generation,
         )
         logger.warning("Worker dispatch will retry", work_item_id=wi_id, error=str(exc))
     except WorkItemPayloadError as exc:
-        await store.set_result(
+        await work_service.set_result(
             item.id,
             {"error": str(exc), "error_type": "WorkItemPayloadError"},
             WorkItemStatus.FAILED,
@@ -155,7 +126,7 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
         result: dict[str, Any] = {"error": str(exc), "error_type": exc.error_type}
         if exc.output is not None:
             result["output"] = exc.output
-        await store.set_result(
+        await work_service.set_result(
             item.id,
             result,
             WorkItemStatus.FAILED,
@@ -164,7 +135,7 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
         )
         logger.warning("Worker dispatch failed", work_item_id=wi_id, error=str(exc))
     except WorkloadCancelledError as exc:
-        await store.set_result(
+        await work_service.set_result(
             item.id,
             {"cancelled": True, "execution_started": False, "reason": str(exc)},
             WorkItemStatus.CANCELLED,
@@ -173,7 +144,7 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
         )
         logger.info("Node cancellation was confirmed before Execute", work_item_id=wi_id)
     except WorkloadOutcomeUnknownError as exc:
-        await store.mark_reconciliation_required(
+        await work_service.mark_reconciliation_required(
             item.id,
             str(exc),
             claim_owner_id=claim_owner_id,
@@ -181,7 +152,7 @@ async def _process_item(  # noqa: C901, PLR0912 - dispatch outcomes have distinc
         )
         logger.exception("Work item requires outcome reconciliation", work_item_id=wi_id, error=str(exc))
     except Exception as e:
-        await store.mark_reconciliation_required(
+        await work_service.mark_reconciliation_required(
             item.id,
             "Worker failed after dispatch began; the execution outcome is unknown",
             claim_owner_id=claim_owner_id,
@@ -220,57 +191,10 @@ async def _listen_loop(database_url: str, wakeup_event: asyncio.Event) -> None:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
-async def _place_reserved_item(
-    item: WorkItem,
-    store: WorkStore,
-    placement_resolver: PlacementResolver,
-) -> WorkItem | None:
-    """Assign a still-eligible target to a reserved work item."""
-    claim_owner_id = item.claim_owner_id
-    if claim_owner_id is None:
-        logger.error("Reserved work item has no claim owner", work_item_id=str(item.id))
-        return None
-
-    requirements = _requirements_for(item)
-
-    async def target_is_eligible(cluster: Cluster, target: ExecutionTarget) -> bool:
-        return await _target_is_eligible(cluster, target, placement_resolver, requirements)
-
-    resolved = await placement_resolver.resolve(requirements)
-    if not resolved.available_targets:
-        await store.set_result(
-            item.id,
-            {"error": "No execution target matched placement requirements", "error_type": "TargetUnavailable"},
-            WorkItemStatus.FAILED,
-            claim_owner_id=claim_owner_id,
-            claim_generation=item.claim_generation,
-        )
-        return None
-
-    for target in resolved.available_targets:
-        assigned = await store.assign_target(
-            item.id,
-            target.id,
-            claim_owner_id=claim_owner_id,
-            claim_generation=item.claim_generation,
-            eligibility=target_is_eligible,
-        )
-        if assigned is not None:
-            return assigned
-
-    await store.release_claim(
-        item.id,
-        claim_owner_id=claim_owner_id,
-        claim_generation=item.claim_generation,
-    )
-    return None
-
-
 async def _poll_loop(
-    store: WorkStore,
-    target_store: ExecutionTargetStore,
+    work_service: WorkItemService,
+    target_service: ExecutionTargetService,
     worker_managers: WorkerManagerRegistry,
-    placement_resolver: PlacementResolver,
     settings: EPSettings,
     wakeup_event: asyncio.Event,
 ) -> None:
@@ -280,13 +204,13 @@ async def _poll_loop(
     while True:
         item = None
         try:
-            item = await store.reserve_one()
+            item = await work_service.reserve_one()
             if item:
                 if item.execution_target_id is None:
-                    item = await _place_reserved_item(item, store, placement_resolver)
+                    item = await work_service.place_reserved_item(item)
                 if item:
                     logger.info("Claimed work item", work_item_id=str(item.id))
-                    await _process_item(item, store, target_store, worker_managers, settings)
+                    await _process_item(item, work_service, target_service, worker_managers, settings)
         except Exception:
             logger.exception("Error in polling loop, will retry")
 
@@ -304,16 +228,23 @@ async def run_worker(database_url: str) -> None:
     """
     settings = get_ep_settings()
     async with (
-        WorkStore.from_database_url(database_url) as work_store,
+        WorkStore.from_database_url(database_url) as work_item_store,
         ClusterStore.from_database_url(database_url) as cluster_store,
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
         event_delivery = CompletionNotifier(settings)
-        workload_manager = VanillaK8sWorkerManager(target_store, cluster_store, work_store, settings)
         worker_managers = WorkerManagerRegistry()
+        target_service = ExecutionTargetService(target_store)
+        cluster_service = ClusterService(
+            cluster_store,
+            target_service,
+            NoopDiscoveryMechanism(),
+        )
+        placement_resolver = build_placement_resolver(cluster_service, target_service, worker_managers)
+        work_service = WorkItemService(work_item_store, placement_resolver)
+        workload_manager = VanillaK8sWorkerManager(target_service, cluster_service, work_service, settings)
         worker_managers.register(BackendType.VANILLA_K8S, workload_manager)
-        drain_monitor = DrainMonitor(target_store, cluster_store, work_store)
-        placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
+        drain_monitor = DrainMonitor(target_service, cluster_service, work_service)
         logger.debug(
             "ExecutionTarget reconciler constructed",
             resolver=type(placement_resolver).__name__,
@@ -327,13 +258,13 @@ async def run_worker(database_url: str) -> None:
                     name="ep-listener",
                 )
                 tg.create_task(
-                    _poll_loop(work_store, target_store, worker_managers, placement_resolver, settings, wakeup_event),
+                    _poll_loop(work_service, target_service, worker_managers, settings, wakeup_event),
                     name="ep-poll",
                 )
-                tg.create_task(event_delivery.run(work_store), name="ep-completion-delivery")
+                tg.create_task(event_delivery.run(work_service), name="ep-completion-delivery")
                 tg.create_task(run_cluster_binding_reconciler(database_url), name="ep-cluster-bindings")
                 tg.create_task(
-                    run_orphan_policy_reconciler(target_store, cluster_store, work_store),
+                    run_orphan_policy_reconciler(target_service, cluster_service, work_service),
                     name="ep-k8s-policy-reconciler",
                 )
         finally:

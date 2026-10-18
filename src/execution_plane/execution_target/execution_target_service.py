@@ -5,9 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from execution_plane.execution_target.execution_target_store import (
+    ClusterNotAvailableError,
     DefaultExecutionTargetError,
     ExecutionTargetNotFoundError,
 )
+
+__all__ = ["ClusterNotAvailableError", "DefaultExecutionTargetError"]
 
 if TYPE_CHECKING:
     import uuid
@@ -17,7 +20,7 @@ if TYPE_CHECKING:
     from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
 
-class ExecutionTargetRegistry:
+class ExecutionTargetService:
     """Enforce execution-target domain rules without owning a database session."""
 
     def __init__(self, store: ExecutionTargetStore) -> None:
@@ -35,6 +38,8 @@ class ExecutionTargetRegistry:
         created_by: uuid.UUID,
         placement: ExecutionTargetPlacement,
         labels: dict[str, str] | None = None,
+        *,
+        target_id: uuid.UUID | None = None,
     ) -> ExecutionTarget:
         """Create an execution target through the persistence boundary."""
         return await self._store.create(
@@ -47,11 +52,12 @@ class ExecutionTargetRegistry:
             created_by,
             labels=labels,
             placement=placement,
+            target_id=target_id,
         )
 
-    async def get(self, target_id: uuid.UUID) -> ExecutionTarget | None:
+    async def get(self, target_id: uuid.UUID, *, include_secret: bool = False) -> ExecutionTarget | None:
         """Return a target by ID, if it exists."""
-        return await self._store.get(target_id)
+        return await self._store.get(target_id, include_secret=include_secret)
 
     async def list(
         self,
@@ -118,6 +124,14 @@ class ExecutionTargetRegistry:
             api_key=api_key,
             placement=placement,
         )
+
+    async def mark_failed(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
+        """Record an irrecoverable target drain failure."""
+        return await self._store.mark_failed(target_id, updated_by)
+
+    async def finalize_delete(self, target_id: uuid.UUID) -> None:
+        """Delete a drained target when finalization is safe."""
+        await self._store.finalize_delete(target_id)
 
     async def _require_non_default(self, target_id: uuid.UUID) -> ExecutionTarget:
         """Return a target only if it is not the protected default target."""

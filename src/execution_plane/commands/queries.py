@@ -12,7 +12,8 @@ from execution_plane.commands.clusters import ResourceNotFoundError
 from execution_plane.models.cluster import Cluster
 from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane.models.execution_target import ExecutionTarget
-from execution_plane.work_store import WorkStore
+from execution_plane.work_item import WorkItemService
+from execution_plane.work_item.work_item_store import WorkStore
 
 
 class EPResourceQueries:
@@ -21,7 +22,7 @@ class EPResourceQueries:
     def __init__(self, engine: AsyncEngine, client_id: str) -> None:
         """Borrow the API's engine and verified client identity."""
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
-        self._work = WorkStore.from_engine(engine)
+        self._work = WorkItemService(WorkStore.from_engine(engine))
         self._client_id = client_id
 
     async def work_items(self, limit: int) -> list[WorkItemRead]:

@@ -24,7 +24,7 @@ from execution_plane.execution_target_reconciler.types import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from execution_plane.execution_target_reconciler.protocols import EligibilityFilter, ExecutionTargetRegistry
+    from execution_plane.execution_target_reconciler.protocols import EligibilityFilter, ExecutionTargetService
     from execution_plane.execution_target_reconciler.types import ClusterSnapshot, ExecutionTargetSnapshot
 
 logger = structlog.stdlib.get_logger(__name__)
@@ -35,7 +35,7 @@ class ExecutionTargetReconciler:
 
     def __init__(
         self,
-        targets: ExecutionTargetRegistry,
+        targets: ExecutionTargetService,
         filters: Sequence[EligibilityFilter],
     ) -> None:
         """Bind the target query Protocol and the eligibility chain."""
@@ -82,7 +82,7 @@ class ExecutionTargetReconciler:
         target: ExecutionTargetSnapshot,
         requirements: WorkRequirements,
     ) -> bool:
-        """Evaluate one current target snapshot without resolving the full registry."""
+        """Evaluate one current target snapshot without resolving the full Service."""
         if not cluster.enabled:
             return False
         verdict, _ = await self._evaluate(cluster, target, requirements)

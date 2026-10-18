@@ -81,7 +81,7 @@ The outbound `work.execute.completed` command is documented separately under
 | Type (revision 1) | Payload and effect |
 | --- | --- |
 | `work.execute` | `WorkExecute`: image, versioned invocation, optional output configuration; enqueue existing work lifecycle |
-| `command.cancel` | `target_command_id`: existing work UUID; request cancellation through WorkStore |
+| `command.cancel` | `target_command_id`: existing work UUID; request cancellation through WorkItemService |
 | `cluster.register`, `cluster.provision` | `ClusterRegister`: `resource_key`, `desired_revision`, name, endpoint, namespace, credential, optional CA/project grants/labels/enabled; create or replace binding desired state |
 | `cluster.update` | `resource_key`, `desired_revision` and explicitly changed binding fields |
 | `cluster.delete` | `resource_key`, `desired_revision`; disable an existing binding for reconciliation |

@@ -60,7 +60,9 @@ class _Result:
         self.cluster = cluster
         self.targets = targets or []
 
-    def scalar_one_or_none(self) -> ExecutionTarget | None:
+    def scalar_one_or_none(self) -> Cluster | ExecutionTarget | None:
+        if self.cluster is not None:
+            return self.cluster
         return self.targets[0] if self.targets else None
 
     def scalars(self) -> Self:
@@ -92,7 +94,7 @@ class _Session:
         self.added = cluster
 
     async def get(self, _model: object, _cluster_id: uuid.UUID, **_: object) -> Cluster | None:
-        return self.cluster
+        return self.cluster if self.cluster is not None else self.added
 
     async def execute(self, _statement: object) -> _Result:
         return _Result(self.cluster, self.targets)
@@ -273,7 +275,7 @@ class _ClusterStore:
         self.cluster.enabled = status is not ClusterStatus.ERROR
         return self.cluster
 
-    async def get(self, _cluster_id: uuid.UUID) -> Cluster | None:
+    async def get(self, _cluster_id: uuid.UUID, **_: object) -> Cluster | None:
         return self.cluster
 
     async def list(self, **_: object) -> list[Cluster]:
@@ -288,7 +290,7 @@ class _ClusterStore:
         self.finalized = True
 
 
-class _TargetRegistry:
+class _TargetService:
     def __init__(
         self,
         *,
@@ -311,6 +313,17 @@ class _TargetRegistry:
 
     async def activate(self, target_id: uuid.UUID, _updated_by: uuid.UUID) -> ExecutionTarget:
         return _target(cluster_id=self.targets[0].cluster_id if self.targets else uuid.uuid4())
+
+    async def reactivate(
+        self,
+        _target_id: uuid.UUID,
+        *,
+        updated_by: uuid.UUID,
+        endpoint: str | None,
+        api_key: str | None,
+        placement: object,
+    ) -> ExecutionTarget:
+        return self.targets[0]
 
     async def list(self, **_: object) -> list[ExecutionTarget]:
         return self.targets
@@ -342,16 +355,88 @@ class _FailingDiscovery:
 
 
 @pytest.mark.asyncio
-async def test_registry_creates_every_discovered_target_via_target_registry_then_activates_cluster() -> None:
-    from execution_plane.cluster.cluster_registry import (
-        ClusterRegistry,
+async def test_service_creates_cluster_with_identity_label_and_cleanses_user_labels() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
+    from execution_plane.cluster.cluster_store import ClusterStore
+
+    session = _Session()
+    store = ClusterStore("postgresql+asyncpg://localhost/syntara")
+    store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    service = ClusterService(store, _TargetService(), _Discovery(object()))  # type: ignore[arg-type]
+
+    cluster = await service.provision(
+        "cluster-a",
+        "https://cluster.example",
+        "cluster-secret",
+        KubernetesPlacement(namespace="execution"),
+        uuid.uuid4(),
+        labels={"region": "eu-west", "_cluster_id": "user-supplied", "_internal": "user-supplied"},
+    )
+
+    assert cluster.labels == {"region": "eu-west", "_cluster_id": str(cluster.id)}
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_service_update_replaces_user_labels_and_preserves_the_cluster_identity_label() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
+    from execution_plane.cluster.cluster_store import ClusterStore
+
+    cluster = _cluster()
+    cluster.labels = {"_cluster_id": str(cluster.id), "region": "old", "team": "old"}
+    session = _Session(cluster=cluster)
+    store = ClusterStore("postgresql+asyncpg://localhost/syntara")
+    store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    service = ClusterService(store, _TargetService(), _Discovery(object()))  # type: ignore[arg-type]
+
+    await service.sync_update(
+        cluster.id,
+        updated_by=uuid.uuid4(),
+        labels={"region": "new", "_cluster_id": "spoofed", "_internal": "spoofed"},
+    )
+
+    assert cluster.labels == {"_cluster_id": str(cluster.id), "region": "new"}
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_service_reactivate_preserves_the_cluster_identity_label() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
+    from execution_plane.cluster.cluster_store import ClusterStore
+
+    cluster = _cluster(status=ClusterStatus.DRAINING)
+    cluster.enabled = False
+    cluster.labels = {"_cluster_id": str(cluster.id), "region": "old"}
+    target = _target(cluster_id=cluster.id, is_default=True)
+    session = _Session(cluster=cluster, targets=[target])
+    store = ClusterStore("postgresql+asyncpg://localhost/syntara")
+    store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    service = ClusterService(store, _TargetService(targets=[target]), _Discovery(object()))  # type: ignore[arg-type]
+
+    await service.provision(
+        "cluster-a",
+        "https://cluster.example",
+        "cluster-secret",
+        KubernetesPlacement(namespace="execution"),
+        uuid.uuid4(),
+        labels={"region": "new", "_cluster_id": "spoofed", "_internal": "spoofed"},
+    )
+
+    assert cluster.labels == {"_cluster_id": str(cluster.id), "region": "new"}
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_service_creates_every_discovered_target_via_target_service_then_activates_cluster() -> None:
+    from execution_plane.cluster.cluster_service import (
+        ClusterService,
         DiscoveredExecutionTarget,
         DiscoveryResult,
     )
 
     cluster = _cluster()
     store = _ClusterStore(cluster)
-    targets = _TargetRegistry()
+    targets = _TargetService()
     discovery = _Discovery(
         DiscoveryResult.discovered(
             [
@@ -369,9 +454,9 @@ async def test_registry_creates_every_discovered_target_via_target_registry_then
             ]
         )
     )
-    registry = ClusterRegistry(store, targets, discovery)  # type: ignore[arg-type]
+    service = ClusterService(store, targets, discovery)  # type: ignore[arg-type]
 
-    result = await registry.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
+    result = await service.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
 
     assert result.status is ClusterStatus.ACTIVE
     assert [target["is_default"] for target in targets.created] == [True, False]
@@ -380,16 +465,16 @@ async def test_registry_creates_every_discovered_target_via_target_registry_then
 
 
 @pytest.mark.asyncio
-async def test_registry_marks_persisted_cluster_error_when_discovery_or_default_target_fails() -> None:
-    from execution_plane.cluster.cluster_registry import (
-        ClusterRegistry,
+async def test_service_marks_persisted_cluster_error_when_discovery_or_default_target_fails() -> None:
+    from execution_plane.cluster.cluster_service import (
+        ClusterService,
         DiscoveredExecutionTarget,
         DiscoveryResult,
     )
 
     cluster = _cluster()
     store = _ClusterStore(cluster)
-    failed_discovery = ClusterRegistry(store, _TargetRegistry(), _Discovery(DiscoveryResult.failed("unreachable")))  # type: ignore[arg-type]
+    failed_discovery = ClusterService(store, _TargetService(), _Discovery(DiscoveryResult.failed("unreachable")))  # type: ignore[arg-type]
 
     result = await failed_discovery.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
 
@@ -398,9 +483,9 @@ async def test_registry_marks_persisted_cluster_error_when_discovery_or_default_
 
     cluster = _cluster()
     store = _ClusterStore(cluster)
-    default_failure = ClusterRegistry(
+    default_failure = ClusterService(
         store,  # type: ignore[arg-type]
-        _TargetRegistry(fail_default=True),  # type: ignore[arg-type]
+        _TargetService(fail_default=True),  # type: ignore[arg-type]
         _Discovery(  # type: ignore[arg-type]
             DiscoveryResult.discovered(
                 [
@@ -424,37 +509,37 @@ async def test_registry_marks_persisted_cluster_error_when_discovery_or_default_
 
 
 @pytest.mark.asyncio
-async def test_registry_marks_persisted_cluster_error_when_discovery_raises() -> None:
-    from execution_plane.cluster.cluster_registry import ClusterRegistry
+async def test_service_marks_persisted_cluster_error_when_discovery_raises() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
 
     cluster = _cluster()
     store = _ClusterStore(cluster)
-    registry = ClusterRegistry(store, _TargetRegistry(), _FailingDiscovery())  # type: ignore[arg-type]
+    service = ClusterService(store, _TargetService(), _FailingDiscovery())  # type: ignore[arg-type]
 
-    result = await registry.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
+    result = await service.register("cluster-a", "https://cluster.example", "cluster-secret", uuid.uuid4())
 
     assert result.status is ClusterStatus.ERROR
     assert result.status_message == "discovery failed"
 
 
 @pytest.mark.asyncio
-async def test_registry_persists_cluster_drain_request() -> None:
-    from execution_plane.cluster.cluster_registry import ClusterRegistry
+async def test_service_persists_cluster_drain_request() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
 
     cluster = _cluster(status=ClusterStatus.ACTIVE)
     store = _ClusterStore(cluster)
-    registry = ClusterRegistry(store, _TargetRegistry(), _Discovery(object()))  # type: ignore[arg-type]
+    service = ClusterService(store, _TargetService(), _Discovery(object()))  # type: ignore[arg-type]
 
     actor_id = uuid.uuid4()
-    result = await registry.request_delete(cluster.id, actor_id)
+    result = await service.request_delete(cluster.id, actor_id)
 
     assert result.status is ClusterStatus.DRAINING
 
 
 @pytest.mark.asyncio
-async def test_registry_marks_cluster_error_when_discovery_returns_no_single_default() -> None:
-    from execution_plane.cluster.cluster_registry import (
-        ClusterRegistry,
+async def test_service_marks_cluster_error_when_discovery_returns_no_single_default() -> None:
+    from execution_plane.cluster.cluster_service import (
+        ClusterService,
         DiscoveredExecutionTarget,
         DiscoveryResult,
     )
@@ -471,7 +556,7 @@ async def test_registry_marks_cluster_error_when_discovery_returns_no_single_def
         )
     )
 
-    result = await ClusterRegistry(store, _TargetRegistry(), discovery).register(  # type: ignore[arg-type]
+    result = await ClusterService(store, _TargetService(), discovery).register(  # type: ignore[arg-type]
         "cluster-a", "https://cluster.example", "secret", uuid.uuid4()
     )
 
@@ -480,16 +565,16 @@ async def test_registry_marks_cluster_error_when_discovery_returns_no_single_def
 
 
 @pytest.mark.asyncio
-async def test_registry_keeps_cluster_active_when_a_non_default_target_fails() -> None:
-    from execution_plane.cluster.cluster_registry import (
-        ClusterRegistry,
+async def test_service_keeps_cluster_active_when_a_non_default_target_fails() -> None:
+    from execution_plane.cluster.cluster_service import (
+        ClusterService,
         DiscoveredExecutionTarget,
         DiscoveryResult,
     )
 
     cluster = _cluster()
     store = _ClusterStore(cluster)
-    targets = _TargetRegistry(fail_named="extra")
+    targets = _TargetService(fail_named="extra")
     discovery = _Discovery(
         DiscoveryResult.discovered(
             [
@@ -508,7 +593,7 @@ async def test_registry_keeps_cluster_active_when_a_non_default_target_fails() -
         )
     )
 
-    result = await ClusterRegistry(store, targets, discovery).register(  # type: ignore[arg-type]
+    result = await ClusterService(store, targets, discovery).register(  # type: ignore[arg-type]
         "cluster-a", "https://cluster.example", "secret", uuid.uuid4()
     )
 
@@ -517,26 +602,26 @@ async def test_registry_keeps_cluster_active_when_a_non_default_target_fails() -
 
 
 @pytest.mark.asyncio
-async def test_registry_delegates_get_and_list_to_the_cluster_store() -> None:
-    from execution_plane.cluster.cluster_registry import ClusterRegistry
+async def test_service_delegates_get_and_list_to_the_cluster_store() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
 
     cluster = _cluster()
-    registry = ClusterRegistry(_ClusterStore(cluster), _TargetRegistry(), _Discovery(object()))  # type: ignore[arg-type]
+    service = ClusterService(_ClusterStore(cluster), _TargetService(), _Discovery(object()))  # type: ignore[arg-type]
 
-    assert await registry.get(cluster.id) is cluster
-    assert await registry.list(status=ClusterStatus.ACTIVE, enabled=True) == [cluster]
+    assert await service.get(cluster.id) is cluster
+    assert await service.list(status=ClusterStatus.ACTIVE, enabled=True) == [cluster]
 
 
 @pytest.mark.asyncio
-async def test_sync_update_forwards_placement_patch_to_target_registry() -> None:
-    from execution_plane.cluster.cluster_registry import ClusterRegistry
+async def test_sync_update_forwards_placement_patch_to_target_service() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
 
     cluster = _cluster()
     target = _target(cluster_id=cluster.id, is_default=True)
-    targets = _TargetRegistry(targets=[target])
-    registry = ClusterRegistry(_ClusterStore(cluster), targets, _Discovery(object()))  # type: ignore[arg-type]
+    targets = _TargetService(targets=[target])
+    service = ClusterService(_ClusterStore(cluster), targets, _Discovery(object()))  # type: ignore[arg-type]
 
-    await registry.sync_update(
+    await service.sync_update(
         cluster.id,
         updated_by=uuid.uuid4(),
         placement=KubernetesPlacement(namespace="updated"),
@@ -551,15 +636,15 @@ async def test_sync_update_forwards_placement_patch_to_target_registry() -> None
 
 @pytest.mark.asyncio
 async def test_sync_update_forwards_cluster_labels_to_the_cluster_store() -> None:
-    from execution_plane.cluster.cluster_registry import ClusterRegistry
+    from execution_plane.cluster.cluster_service import ClusterService
 
     cluster = _cluster()
-    target = _target(cluster_id=cluster.id, is_default=True)
-    targets = _TargetRegistry(targets=[target])
     store = _ClusterStore(cluster)
-    registry = ClusterRegistry(store, targets, _Discovery(object()))  # type: ignore[arg-type]
+    target = _target(cluster_id=cluster.id, is_default=True)
+    targets = _TargetService(targets=[target])
+    service = ClusterService(store, targets, _Discovery(object()))  # type: ignore[arg-type]
 
-    await registry.sync_update(
+    await service.sync_update(
         cluster.id,
         updated_by=uuid.uuid4(),
         labels={"region": "eu-west", "_cluster_id": "spoofed"},
@@ -568,8 +653,25 @@ async def test_sync_update_forwards_cluster_labels_to_the_cluster_store() -> Non
     assert store.updates[0]["labels"] == {"region": "eu-west", "_cluster_id": "spoofed"}
 
 
+@pytest.mark.asyncio
+async def test_sync_update_forwards_cluster_ca_certificate_to_cluster_store() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
+
+    cluster = _cluster()
+    store = _ClusterStore(cluster)
+    service = ClusterService(store, _TargetService(), _Discovery(object()))  # type: ignore[arg-type]
+
+    await service.sync_update(
+        cluster.id,
+        updated_by=uuid.uuid4(),
+        ca_certificate="ca-certificate",
+    )
+
+    assert store.updates[0]["ca_certificate"] == "ca-certificate"
+
+
 def test_noop_discovery_returns_a_failed_result() -> None:
-    from execution_plane.cluster.cluster_registry import ClusterRegistration, NoopDiscoveryMechanism
+    from execution_plane.cluster.cluster_service import ClusterRegistration, NoopDiscoveryMechanism
 
     result = NoopDiscoveryMechanism().discover(ClusterRegistration("name", "endpoint", "secret", {}))
 

@@ -7,7 +7,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from execution_plane.commands.clusters import ResourceNotFoundError
 from execution_plane.commands.context import EPCommandContext
-from execution_plane.execution_target.execution_target_store import DefaultExecutionTargetError, ExecutionTargetStore
+from execution_plane.execution_target.execution_target_service import (
+    DefaultExecutionTargetError,
+    ExecutionTargetService,
+)
+from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.cluster import Cluster
 from execution_plane.models.execution_target import BackendType, ExecutionTarget
 from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
@@ -33,7 +37,8 @@ class TargetCommandHandler:
         resource_id = payload.resource_id
         sessions = async_sessionmaker(context.engine, expire_on_commit=False)
         async with sessions.begin() as session:
-            store = ExecutionTargetStore.from_transaction(session)
+            target_store = ExecutionTargetStore.from_transaction(session)
+            service = ExecutionTargetService(target_store)
             if isinstance(payload, TargetRegister):
                 cluster = await session.get(Cluster, payload.cluster_id, with_for_update=True)
                 if cluster is None or cluster.source_client_id != context.client_id:
@@ -42,7 +47,7 @@ class TargetCommandHandler:
                     raise DefaultExecutionTargetError
                 if await session.get(ExecutionTarget, resource_id) is not None:
                     raise ProtocolConflict
-                await store.create(
+                await service.create(
                     cluster_id=payload.cluster_id,
                     name=payload.name,
                     backend_type=BackendType(payload.backend_type),
@@ -54,7 +59,7 @@ class TargetCommandHandler:
                     labels=payload.labels,
                     target_id=resource_id,
                 )
-                await store.activate(resource_id, SYSTEM_ACTOR)
+                await service.activate(resource_id, SYSTEM_ACTOR)
             else:
                 target = await session.get(ExecutionTarget, resource_id, with_for_update=True)
                 if target is None:
@@ -65,13 +70,13 @@ class TargetCommandHandler:
                 if target.is_default:
                     raise DefaultExecutionTargetError
                 if isinstance(payload, TargetDelete):
-                    await store.request_delete(resource_id, SYSTEM_ACTOR)
+                    await service.request_delete(resource_id, SYSTEM_ACTOR)
                 else:
                     if any(getattr(payload, key) is None for key in payload.model_fields_set):
                         raise ProtocolConflict
                     if payload.placement is not None and payload.placement.type != target.placement.type:
                         raise ProtocolConflict
-                    await store.update(
+                    await service.update(
                         resource_id,
                         updated_by=SYSTEM_ACTOR,
                         name=payload.name,

@@ -426,14 +426,14 @@ async def test_monitor_polls_until_work_for_a_target_is_drained() -> None:
             self.calls += 1
             return self.calls > 1
 
-    work_store = EventuallyDrainedWorkStore()
+    work_item_store = EventuallyDrainedWorkStore()
     monitor = DrainMonitor(
         _TargetStore([target]),  # type: ignore[arg-type]
         _ClusterStore([]),  # type: ignore[arg-type]
-        work_store,  # type: ignore[arg-type]
+        work_item_store,  # type: ignore[arg-type]
         poll_interval=0,
     )
 
     await monitor._wait_until_drained(target.id)
 
-    assert work_store.calls == 2
+    assert work_item_store.calls == 2

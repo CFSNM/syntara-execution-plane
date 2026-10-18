@@ -25,7 +25,8 @@ from execution_plane.models.completion_event import CompletionEvent
 from execution_plane.models.constants import EP_SCHEMA
 from execution_plane.models.execution_target import ExecutionTarget as _ExecutionTarget  # noqa: F401
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.work_store import DuplicateWorkItemError, WorkStore
+from execution_plane.work_item import DuplicateWorkItemError, WorkItemService
+from execution_plane.work_item.work_item_store import WorkStore
 
 
 @pytest.mark.asyncio
@@ -131,20 +132,20 @@ async def test_mapped_rows_reload_project_ids_and_work_item_status() -> None:  #
         assert restored_item is not None
         assert restored_item.status is WorkItemStatus.CLAIMED
 
-        work_store = WorkStore.from_engine(engine)
-        assert await work_store.mark_dispatched(
+        work_service = WorkItemService(WorkStore.from_engine(engine))
+        assert await work_service.mark_dispatched(
             work_item_id,
             claim_owner_id=claim_owner_id,
             claim_generation=1,
         )
-        dispatched = await work_store.get(
+        dispatched = await work_service.get(
             work_item_id,
             client_id=binding_key[0],
         )
         assert dispatched is not None
         assert dispatched.status is WorkItemStatus.DISPATCHED
 
-        await work_store.set_result(
+        await work_service.set_result(
             work_item_id,
             {"output": {"ok": True}},
             WorkItemStatus.COMPLETED,
@@ -181,7 +182,8 @@ async def test_dispatch_duplicate_id_raises() -> None:
     item_id = uuid.uuid4()
     payload = {"invocation": {"version": 1}}
 
-    async with WorkStore.from_database_url(database_url) as store:
+    async with WorkStore.from_database_url(database_url) as work_item_store:
+        store = WorkItemService(work_item_store)
         try:
             await store.dispatch(client_id="test-duplicate", item_id=item_id, payload=payload)
             with pytest.raises(DuplicateWorkItemError):

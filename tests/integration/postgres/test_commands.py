@@ -345,6 +345,7 @@ async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(c
 async def test_failed_target_creation_rolls_back_and_default_targets_are_protected(command_client, monkeypatch):
     from datetime import UTC, datetime
 
+    from execution_plane.execution_target.execution_target_service import ExecutionTargetService
     from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.models.cluster import Cluster, ClusterStatus
     from execution_plane.models.execution_target import BackendType, ExecutionTarget
@@ -368,7 +369,9 @@ async def test_failed_target_creation_rolls_back_and_default_targets_are_protect
             )
         )
     async with sessions.begin() as session:
-        default = await ExecutionTargetStore.from_transaction(session).create(
+        target_store = ExecutionTargetStore.from_transaction(session)
+        target_service = ExecutionTargetService(target_store)
+        default = await target_service.create(
             cluster_id=cluster_id,
             name="default",
             backend_type=BackendType.VANILLA_K8S,
@@ -386,7 +389,7 @@ async def test_failed_target_creation_rolls_back_and_default_targets_are_protect
         message = "simulated activation failure"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(ExecutionTargetStore, "activate", fail_activation)
+    monkeypatch.setattr(ExecutionTargetService, "activate", fail_activation)
     payload = {
         "resource_id": str(target_id),
         "cluster_id": str(cluster_id),

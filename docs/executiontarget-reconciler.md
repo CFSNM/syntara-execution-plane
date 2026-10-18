@@ -24,8 +24,8 @@ What labels *are for*, who writes them, and how they differ from AO
 resource tags is in [labels.md](labels.md). This document only specifies
 how the reconciler matches an already-resolved selector map.
 
-It does not implement the Work Scheduler, Cluster Registry, ExecutionTarget
-Registry, Resource Monitor, or Isolation Policy. Those stories consume or
+It does not implement the Work Scheduler, Cluster Service, ExecutionTarget
+Service, Resource Monitor, or Isolation Policy. Those stories consume or
 replace the interfaces defined here.
 
 ## Context
@@ -101,7 +101,7 @@ always:
 2. For each remaining Cluster, enumerates that Cluster's ExecutionTargets.
 3. Filters those ExecutionTargets.
 
-Cluster Registry persistence and the foreign key are owned by
+Cluster Service persistence and the foreign key are owned by
 [AAP-92716](https://redhat.atlassian.net/browse/AAP-92716). This story
 depends on the query Protocols below, not on the table shapes.
 
@@ -124,8 +124,8 @@ or more namespaces as ExecutionTargets.
 ## Process model
 
 The ExecutionTarget Reconciler is a **co-located library** in the
-execution-plane worker process, not a remote service. The Cluster Registry
-and ExecutionTarget Registry may become remote later; reconciliation logic
+execution-plane worker process, not a remote Service. The Cluster Service
+and ExecutionTarget Service may become remote later; reconciliation logic
 stays local.
 
 The Work Scheduler must never contain backend-type routing logic. How a
@@ -147,7 +147,7 @@ Work Scheduler
 `ExecutionTargetReconciler.resolve()` returns Cluster and ExecutionTarget
 metadata only. It does **not** return a `WorkerManager` instance. Worker
 Manager objects are not serializable and would make the reconciler unusable
-if the registries are remote.
+if the Services are remote.
 
 `PlacementResolver` is a thin local facade used by the scheduler. It calls
 the reconciler, then looks up a locally registered Worker Manager by the
@@ -205,10 +205,10 @@ class ExecutionTargetSnapshot:
     lifecycle: str          # see Lifecycle filter
     enabled: bool
 
-class ClusterRegistry(Protocol):
+class ClusterService(Protocol):
     async def list_clusters(self) -> Sequence[ClusterSnapshot]: ...
 
-class ExecutionTargetRegistry(Protocol):
+class ExecutionTargetService(Protocol):
     async def list_by_cluster(
         self, cluster_id: uuid.UUID
     ) -> Sequence[ExecutionTargetSnapshot]: ...
@@ -218,13 +218,13 @@ class ExecutionTargetRegistry(Protocol):
 that Cluster's ExecutionTargets. Every `ExecutionTargetSnapshot` carries
 its `ClusterSnapshot` (`target.cluster`). Targets of the same Cluster share
 one ClusterSnapshot instance. The reconciler applies eligibility filters
-in process; the registries are not required to pre-filter by selector.
+in process; the Services are not required to pre-filter by selector.
 
 Until AAP-92716 lands Cluster as a first-class row, an adapter may expose a
 single implicit Cluster (the local OpenShift / Kubernetes cluster) wrapping
 the existing `ExecutionTarget` rows (`labels`, `backend_type`, `status`,
 `enabled`, and a namespace). `TargetStatus.ACTIVE` is eligible;
-`enabled is False` is ineligible. Swap the adapter for the real registries
+`enabled is False` is ineligible. Swap the adapter for the real Services
 without changing `ExecutionTargetReconciler`.
 
 ## Core operation: Resolve
@@ -233,8 +233,8 @@ without changing `ExecutionTargetReconciler`.
 class ExecutionTargetReconciler:
     def __init__(
         self,
-        clusters: ClusterRegistry,
-        targets: ExecutionTargetRegistry,
+        clusters: ClusterService,
+        targets: ExecutionTargetService,
         filters: Sequence[EligibilityFilter],
     ) -> None: ...
 
@@ -256,7 +256,7 @@ Algorithm:
 7. Set `outcome` from whether `available_targets` is empty. Do not sort or
    select among the available set.
 
-No I/O besides the two registries. No mutation of work items, Clusters, or
+No I/O besides the two Services. No mutation of work items, Clusters, or
 ExecutionTargets.
 
 ## Selector model
@@ -504,8 +504,8 @@ sequenceDiagram
     participant S as Work Scheduler
     participant PR as PlacementResolver
     participant R as ExecutionTargetReconciler
-    participant CR as Cluster Registry
-    participant TR as ExecutionTarget Registry
+    participant CR as Cluster Service
+    participant TR as ExecutionTarget Service
     participant WM as WorkerManagerRegistry
 
     S->>PR: resolve(WorkRequirements)
@@ -563,7 +563,7 @@ Syntara `BaseService` (this is not an HTTP domain service).
 ```
 backend/execution-plane/src/execution_plane/execution_target_reconciler/
   types.py          # WorkRequirements, ClusterSnapshot, ExecutionTargetSnapshot, ReconcileResult, ...
-  protocols.py      # ClusterRegistry, ExecutionTargetRegistry, EligibilityFilter
+  protocols.py      # ClusterService, ExecutionTargetService, EligibilityFilter
   exceptions.py
   matching.py       # exact-AND selector match
   filters.py        # Lifecycle, Selector, no-op Health/Policy
@@ -582,7 +582,7 @@ do not re-export from `__init__.py`.
 - Work Scheduler loop, claim/retry, `pg_notify` (AAP-92722)
 - Wiring `worker.py` off in-process `execute_script` (valid until the
   scheduler exists)
-- Cluster / ExecutionTarget Registry CRUD, migrations, auto-provisioning
+- Cluster / ExecutionTarget Service CRUD, migrations, auto-provisioning
   (AAP-92716)
 - New REST endpoints or OpenAPI changes
 - `WorkItem.selectors` column (Work Executor / Work Store)
@@ -592,13 +592,13 @@ do not re-export from `__init__.py`.
 
 ## Coordination
 
-- **AAP-92716 (Pool / Cluster Registry):** persist `Cluster` with a one-to-many
-  foreign key to `ExecutionTarget`. Share `ClusterRegistry` /
-  `ClusterSnapshot` and `ExecutionTargetRegistry` /
+- **AAP-92716 (Pool / Cluster Service):** persist `Cluster` with a one-to-many
+  foreign key to `ExecutionTarget`. Share `ClusterService` /
+  `ClusterSnapshot` and `ExecutionTargetService` /
   `ExecutionTargetSnapshot` field names (cluster: name, labels,
   cluster_type, enabled; target: cluster backref, name, namespace,
   backend_type, labels, lifecycle, enabled) so the implicit-cluster
-  adapter can be deleted when the real registries land.
+  adapter can be deleted when the real Services land.
 - **AAP-92715 / AAP-92720 (Work Store / Work Executor):** if selectors are
   persisted on `WorkItem`, map them into `WorkRequirements`; do not couple
   the reconciler to the row type. AO must resolve Project / Workflow /

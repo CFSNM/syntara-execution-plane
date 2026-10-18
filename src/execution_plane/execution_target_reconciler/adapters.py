@@ -1,4 +1,4 @@
-"""Adapt persisted Cluster and ExecutionTarget rows into reconciler snapshots."""
+"""Adapt Cluster and ExecutionTarget domain data into reconciler snapshots."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from execution_plane.execution_target_reconciler.filters import default_filters
 from execution_plane.execution_target_reconciler.placement import PlacementResolver, WorkerManagerRegistry
-from execution_plane.execution_target_reconciler.protocols import ExecutionTargetRegistry
+from execution_plane.execution_target_reconciler.protocols import ExecutionTargetService
 from execution_plane.execution_target_reconciler.reconciler import ExecutionTargetReconciler
 from execution_plane.execution_target_reconciler.types import ClusterSnapshot, ExecutionTargetSnapshot
 from execution_plane.models.cluster import ClusterStatus
@@ -14,8 +14,10 @@ from execution_plane.models.cluster import ClusterStatus
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from execution_plane.cluster.cluster_store import ClusterStore
-    from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
+    from execution_plane.cluster.cluster_service import ClusterService
+    from execution_plane.execution_target.execution_target_service import (
+        ExecutionTargetService as DomainExecutionTargetService,
+    )
     from execution_plane.execution_target_reconciler.protocols import EligibilityFilter
     from execution_plane.models.cluster import Cluster
     from execution_plane.models.execution_target import ExecutionTarget
@@ -50,13 +52,13 @@ def execution_target_snapshot_from_model(
     )
 
 
-class ExecutionTargetStoreAdapter(ExecutionTargetRegistry):
-    """`ExecutionTargetRegistry` Protocol backed by Cluster and ExecutionTarget stores."""
+class ExecutionTargetServiceAdapter(ExecutionTargetService):
+    """`ExecutionTargetService` Protocol backed by Cluster and target Services."""
 
-    def __init__(self, cluster_store: ClusterStore, target_store: ExecutionTargetStore) -> None:
+    def __init__(self, cluster_service: ClusterService, target_service: DomainExecutionTargetService) -> None:
         """Load Clusters first so every target of a Cluster shares one snapshot instance."""
-        self._clusters = cluster_store
-        self._targets = target_store
+        self._clusters = cluster_service
+        self._targets = target_service
 
     async def list(self) -> Sequence[ExecutionTargetSnapshot]:
         """Return all targets with interned Cluster backrefs. Orphans with no Cluster are omitted."""
@@ -68,24 +70,24 @@ class ExecutionTargetStoreAdapter(ExecutionTargetRegistry):
         )
 
 
-def store_backed_target_registry(
-    cluster_store: ClusterStore,
-    target_store: ExecutionTargetStore,
-) -> ExecutionTargetStoreAdapter:
-    """Build a flat target registry that interns ClusterSnapshot instances."""
-    return ExecutionTargetStoreAdapter(cluster_store, target_store)
+def service_backed_target_service(
+    cluster_service: ClusterService,
+    target_service: DomainExecutionTargetService,
+) -> ExecutionTargetServiceAdapter:
+    """Build a flat target Service that interns ClusterSnapshot instances."""
+    return ExecutionTargetServiceAdapter(cluster_service, target_service)
 
 
 def build_placement_resolver(
-    cluster_store: ClusterStore,
-    target_store: ExecutionTargetStore,
+    cluster_service: ClusterService,
+    target_service: DomainExecutionTargetService,
     worker_managers: WorkerManagerRegistry | None = None,
     filters: Sequence[EligibilityFilter] | None = None,
 ) -> PlacementResolver:
     """Construct the co-located PlacementResolver used by the worker process."""
     return PlacementResolver(
         ExecutionTargetReconciler(
-            store_backed_target_registry(cluster_store, target_store),
+            service_backed_target_service(cluster_service, target_service),
             filters or default_filters(),
         ),
         worker_managers or WorkerManagerRegistry(),

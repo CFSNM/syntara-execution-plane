@@ -13,7 +13,7 @@ import hashlib
 import os
 import time
 import uuid
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING
@@ -21,19 +21,24 @@ from typing import TYPE_CHECKING
 import pytest
 from kubernetes.client import ApiException, BatchV1Api, CoreV1Api, V1Job, V1Pod, V1PodSpec
 
+from execution_plane.cluster.cluster_service import ClusterService, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.config import EPSettings, get_ep_settings
+from execution_plane.execution_target.execution_target_service import ExecutionTargetService
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.execution_target_reconciler.adapters import build_placement_resolver
 from execution_plane.execution_target_reconciler.placement import WorkerManagerRegistry
 from execution_plane.models.execution_target import BackendType
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.work_store import WorkStore
-from execution_plane.worker import _place_reserved_item, _process_item
+from execution_plane.work_item import WorkItemService
+from execution_plane.work_item.work_item_store import WorkStore
+from execution_plane.worker import _process_item
 from execution_plane.worker_manager.vanilla_k8s.manager import VanillaK8sWorkerManager
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from execution_plane.models.cluster import Cluster
     from execution_plane.models.execution_target import ExecutionTarget
 
@@ -134,10 +139,10 @@ def _assert_pod_spec(pod_spec: V1PodSpec) -> None:
 
 
 async def _first_target(
-    target_store: ExecutionTargetStore,
+    target_service: ExecutionTargetService,
     cluster_id: uuid.UUID,
 ) -> ExecutionTarget:
-    targets = await target_store.list(cluster_id=cluster_id)
+    targets = await target_service.list(cluster_id=cluster_id)
     assert targets, "Expected the kind fixture to provision an ExecutionTarget"
     return targets[0]
 
@@ -150,16 +155,41 @@ class _DispatchedItem:
     worker_managers: WorkerManagerRegistry
 
 
-async def _dispatch_item(
-    work_store: WorkStore,
+@asynccontextmanager
+async def _work_service(
+    database_url: str,
+    cluster_service: ClusterService,
+    target_service: ExecutionTargetService,
+    settings: EPSettings,
+) -> AsyncIterator[tuple[WorkItemService, WorkerManagerRegistry]]:
+    worker_managers = WorkerManagerRegistry()
+    placement_resolver = build_placement_resolver(cluster_service, target_service, worker_managers)
+    async with WorkStore.from_database_url(database_url) as work_item_store:
+        work_service = WorkItemService(work_item_store, placement_resolver)
+        workload_manager = VanillaK8sWorkerManager(target_service, cluster_service, work_service, settings)
+        worker_managers.register(BackendType.VANILLA_K8S, workload_manager)
+        yield work_service, worker_managers
+
+
+def _registries(
     cluster_store: ClusterStore,
     target_store: ExecutionTargetStore,
-    settings: EPSettings,
+) -> tuple[ClusterService, ExecutionTargetService]:
+    target_service = ExecutionTargetService(target_store)
+    return (
+        ClusterService(cluster_store, target_service, NoopDiscoveryMechanism()),
+        target_service,
+    )
+
+
+async def _dispatch_item(
+    work_service: WorkItemService,
+    worker_managers: WorkerManagerRegistry,
     *,
     client_id: str,
     invocation: dict[str, object],
 ) -> _DispatchedItem:
-    item = await work_store.dispatch(
+    item = await work_service.dispatch(
         client_id=client_id,
         item_id=uuid.uuid4(),
         payload={
@@ -168,15 +198,12 @@ async def _dispatch_item(
         },
     )
 
-    worker_managers = _worker_managers(target_store, cluster_store, work_store, settings)
-    placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
-
-    reserved = await work_store.reserve_one()
+    reserved = await work_service.reserve_one()
     assert reserved is not None
     assert reserved.id == item.id
     assert reserved.status is WorkItemStatus.CLAIMED
 
-    assigned = await _place_reserved_item(reserved, work_store, placement_resolver)
+    assigned = await work_service.place_reserved_item(reserved)
     assert assigned is not None
     assert assigned.id == item.id
     assert assigned.execution_target_id is not None
@@ -187,7 +214,7 @@ async def _dispatch_item(
 
 
 async def _cancel_processing_task(
-    work_store: WorkStore,
+    work_service: WorkItemService,
     processing_task: asyncio.Task[None],
     *,
     item_id: uuid.UUID,
@@ -197,7 +224,7 @@ async def _cancel_processing_task(
         return
 
     with suppress(Exception):
-        await work_store.request_cancel(item_id, client_id=client_id)
+        await work_service.request_cancel(item_id, client_id=client_id)
 
     await asyncio.wait({processing_task}, timeout=_DISPATCH_CLEANUP_TIMEOUT_SECONDS)
     if processing_task.done():
@@ -227,18 +254,6 @@ async def _assert_job_cleaned_up(
     assert not pods.items
 
 
-def _worker_managers(
-    target_store: ExecutionTargetStore,
-    cluster_store: ClusterStore,
-    work_store: WorkStore,
-    settings: EPSettings,
-) -> WorkerManagerRegistry:
-    registry = WorkerManagerRegistry()
-    workload_manager = VanillaK8sWorkerManager(target_store, cluster_store, work_store, settings)
-    registry.register(BackendType.VANILLA_K8S, workload_manager)
-    return registry
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster: Cluster) -> None:
@@ -253,35 +268,26 @@ async def test_work_item_dispatched_to_kind_cluster_reaches_completed(ep_cluster
     client_id = "ep-it-dispatch"
 
     async with (
-        WorkStore.from_database_url(database_url) as work_store,
         ClusterStore.from_database_url(database_url) as cluster_store,
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
-        item = await work_store.dispatch(
-            client_id=client_id,
-            item_id=uuid.uuid4(),
-            payload={
-                "image": _NODE_IMAGE,
-                "invocation": _SCRIPT_INVOCATION,
-            },
-        )
+        cluster_service, target_service = _registries(cluster_store, target_store)
+        async with _work_service(database_url, cluster_service, target_service, settings) as (
+            work_service,
+            worker_managers,
+        ):
+            dispatched = await _dispatch_item(
+                work_service,
+                worker_managers,
+                client_id=client_id,
+                invocation=_SCRIPT_INVOCATION,
+            )
+            item = dispatched.item
+            assigned = dispatched.assigned
 
-        worker_managers = _worker_managers(target_store, cluster_store, work_store, settings)
-        placement_resolver = build_placement_resolver(cluster_store, target_store, worker_managers)
+            await _process_item(assigned, work_service, target_service, worker_managers, settings)
 
-        reserved = await work_store.reserve_one()
-        assert reserved is not None, "reserve_one() returned None — no queued work is available"
-        assert reserved.id == item.id
-        assert reserved.status is WorkItemStatus.CLAIMED
-
-        assigned = await _place_reserved_item(reserved, work_store, placement_resolver)
-        assert assigned is not None, "PlacementResolver assigned no eligible target"
-        assert assigned.id == item.id
-        assert assigned.execution_target_id is not None
-
-        await _process_item(assigned, work_store, target_store, worker_managers, settings)
-
-        final_item = await work_store.get(item.id, client_id=client_id)
+            final_item = await work_service.get(item.id, client_id=client_id)
 
     assert final_item is not None
     assert final_item.status is WorkItemStatus.COMPLETED, (
@@ -301,16 +307,16 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
     client_id = "ep-it-node-selector"
 
     async with (
-        WorkStore.from_database_url(database_url) as work_store,
         ClusterStore.from_database_url(database_url) as cluster_store,
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
-        target = await _first_target(target_store, ep_cluster.id)
+        cluster_service, target_service = _registries(cluster_store, target_store)
+        target = await _first_target(target_service, ep_cluster.id)
         original_placement = target.placement
         assert isinstance(original_placement, KubernetesPlacement)
         namespace = original_placement.namespace
 
-        await target_store.update(
+        await target_service.update(
             target.id,
             updated_by=uuid.uuid4(),
             placement=KubernetesPlacement(
@@ -321,53 +327,54 @@ async def test_work_item_dispatched_to_kind_cluster_includes_node_selector_in_po
         )
 
         try:
-            dispatched = await _dispatch_item(
-                work_store,
-                cluster_store,
-                target_store,
-                settings,
-                client_id=client_id,
-                invocation=_SLEEP_SCRIPT_INVOCATION,
-            )
-            item = dispatched.item
-            assigned = dispatched.assigned
-            job_name = dispatched.job_name
-            worker_managers = dispatched.worker_managers
-
-            processing_task = asyncio.create_task(
-                _process_item(assigned, work_store, target_store, worker_managers, settings)
-            )
-
-            try:
-                job = await _wait_for_job(
-                    kubernetes_batch_api,
-                    job_name,
-                    namespace,
-                    _JOB_WAIT_TIMEOUT_SECONDS,
-                )
-
-                assert job.spec is not None
-                assert job.spec.template is not None
-                assert job.spec.template.spec is not None
-                pod_spec = job.spec.template.spec
-                _assert_pod_spec(pod_spec)
-
-                dispatched_item = await work_store.get(item.id, client_id=client_id)
-                assert dispatched_item is not None
-                assert dispatched_item.status is WorkItemStatus.DISPATCHED
-
-                await processing_task
-            finally:
-                await _cancel_processing_task(
-                    work_store,
-                    processing_task,
-                    item_id=item.id,
+            async with _work_service(database_url, cluster_service, target_service, settings) as (
+                work_service,
+                worker_managers,
+            ):
+                dispatched = await _dispatch_item(
+                    work_service,
+                    worker_managers,
                     client_id=client_id,
+                    invocation=_SLEEP_SCRIPT_INVOCATION,
+                )
+                item = dispatched.item
+                assigned = dispatched.assigned
+                job_name = dispatched.job_name
+
+                processing_task = asyncio.create_task(
+                    _process_item(assigned, work_service, target_service, worker_managers, settings)
                 )
 
-            final_item = await work_store.get(item.id, client_id=client_id)
+                try:
+                    job = await _wait_for_job(
+                        kubernetes_batch_api,
+                        job_name,
+                        namespace,
+                        _JOB_WAIT_TIMEOUT_SECONDS,
+                    )
+
+                    assert job.spec is not None
+                    assert job.spec.template is not None
+                    assert job.spec.template.spec is not None
+                    pod_spec = job.spec.template.spec
+                    _assert_pod_spec(pod_spec)
+
+                    dispatched_item = await work_service.get(item.id, client_id=client_id)
+                    assert dispatched_item is not None
+                    assert dispatched_item.status is WorkItemStatus.DISPATCHED
+
+                    await processing_task
+                finally:
+                    await _cancel_processing_task(
+                        work_service,
+                        processing_task,
+                        item_id=item.id,
+                        client_id=client_id,
+                    )
+
+                final_item = await work_service.get(item.id, client_id=client_id)
         finally:
-            await target_store.update(
+            await target_service.update(
                 target.id,
                 updated_by=uuid.uuid4(),
                 placement=original_placement,
@@ -391,63 +398,64 @@ async def test_work_item_cancel_reaches_cancelled(
     client_id = "ep-it-cancel"
 
     async with (
-        WorkStore.from_database_url(database_url) as work_store,
         ClusterStore.from_database_url(database_url) as cluster_store,
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
-        target = await _first_target(target_store, ep_cluster.id)
+        cluster_service, target_service = _registries(cluster_store, target_store)
+        target = await _first_target(target_service, ep_cluster.id)
         assert isinstance(target.placement, KubernetesPlacement)
         namespace = target.placement.namespace
 
-        dispatched = await _dispatch_item(
-            work_store,
-            cluster_store,
-            target_store,
-            settings,
-            client_id=client_id,
-            invocation=_CANCEL_SCRIPT_INVOCATION,
-        )
-        item = dispatched.item
-        assigned = dispatched.assigned
-        job_name = dispatched.job_name
-        worker_managers = dispatched.worker_managers
-        core_api = CoreV1Api(kubernetes_batch_api.api_client)
-
-        processing_task = asyncio.create_task(
-            _process_item(assigned, work_store, target_store, worker_managers, settings)
-        )
-
-        try:
-            await _wait_for_running_pod(
-                core_api,
-                job_name,
-                namespace,
-                _JOB_WAIT_TIMEOUT_SECONDS,
-            )
-
-            dispatched_item = await work_store.get(item.id, client_id=client_id)
-            assert dispatched_item is not None
-            assert dispatched_item.status is WorkItemStatus.DISPATCHED
-
-            cancel_requested = await work_store.request_cancel(item.id, client_id=client_id)
-            assert cancel_requested.status is WorkItemStatus.CANCEL_REQUESTED
-
-            await processing_task
-            await _assert_job_cleaned_up(
-                kubernetes_batch_api,
-                core_api,
-                job_name,
-                namespace,
-            )
-
-            final_item = await work_store.get(item.id, client_id=client_id)
-        finally:
-            await _cancel_processing_task(
-                work_store,
-                processing_task,
-                item_id=item.id,
+        async with _work_service(database_url, cluster_service, target_service, settings) as (
+            work_service,
+            worker_managers,
+        ):
+            dispatched = await _dispatch_item(
+                work_service,
+                worker_managers,
                 client_id=client_id,
+                invocation=_CANCEL_SCRIPT_INVOCATION,
             )
+            item = dispatched.item
+            assigned = dispatched.assigned
+            job_name = dispatched.job_name
+            core_api = CoreV1Api(kubernetes_batch_api.api_client)
+
+            processing_task = asyncio.create_task(
+                _process_item(assigned, work_service, target_service, worker_managers, settings)
+            )
+
+            try:
+                await _wait_for_running_pod(
+                    core_api,
+                    job_name,
+                    namespace,
+                    _JOB_WAIT_TIMEOUT_SECONDS,
+                )
+
+                dispatched_item = await work_service.get(item.id, client_id=client_id)
+                assert dispatched_item is not None
+                assert dispatched_item.status is WorkItemStatus.DISPATCHED
+
+                cancel_requested = await work_service.request_cancel(item.id, client_id=client_id)
+                assert cancel_requested.status is WorkItemStatus.CANCEL_REQUESTED
+
+                await processing_task
+                await _assert_job_cleaned_up(
+                    kubernetes_batch_api,
+                    core_api,
+                    job_name,
+                    namespace,
+                )
+
+                final_item = await work_service.get(item.id, client_id=client_id)
+            finally:
+                await _cancel_processing_task(
+                    work_service,
+                    processing_task,
+                    item_id=item.id,
+                    client_id=client_id,
+                )
 
     assert final_item is not None
     assert final_item.status is WorkItemStatus.CANCELLED, (

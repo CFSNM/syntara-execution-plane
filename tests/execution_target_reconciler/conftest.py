@@ -8,7 +8,7 @@ from collections.abc import Callable
 import pytest
 
 from execution_plane.execution_target_reconciler.filters import default_filters
-from execution_plane.execution_target_reconciler.protocols import ExecutionTargetRegistry
+from execution_plane.execution_target_reconciler.protocols import ExecutionTargetService
 from execution_plane.execution_target_reconciler.reconciler import ExecutionTargetReconciler
 from execution_plane.execution_target_reconciler.types import (
     ACTIVE_LIFECYCLE,
@@ -67,8 +67,8 @@ def target_snapshot(
     )
 
 
-class StaticTargetRegistry(ExecutionTargetRegistry):
-    """In-memory ExecutionTargetRegistry Protocol implementation."""
+class StaticTargetRegistry(ExecutionTargetService):
+    """In-memory ExecutionTargetService Protocol implementation."""
 
     def __init__(self, targets: list[ExecutionTargetSnapshot]) -> None:
         """Hold the ExecutionTarget snapshots to return from list."""

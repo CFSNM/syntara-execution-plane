@@ -1,89 +1,52 @@
-# Execution Plane: Work Store
+# Execution Plane: Work Store and Service
 
-`WorkStore` is the internal Python interface for interacting with `WorkItem` records in its durable
-store (Postgres in the current branch).
-See [logical_components.md](logical_components.md) for how it fits into the logical decomposition of the Execution Plane service.
+`WorkStore` is the internal persistence boundary for `WorkItem` and
+`CompletionEvent` records. `WorkItemService` is the domain-facing boundary used
+by command handlers, the worker, Worker Managers, the Completion Notifier, and
+the drain monitor.
 
-**Source:** `execution_plane/work_store.py`, `execution_plane/models/work_item.py`
+**Sources:** `src/execution_plane/work_item/work_item_store.py`,
+`src/execution_plane/work_item/work_item_service.py`,
+`src/execution_plane/models/work_item.py`
 
----
+## Boundary
 
-## Context
-
-*(Implemented)*
-
-The Consumer (Syntara or AWX) submits work to the [Work Executor](work-executor.md),
-which persists a `WorkItem` to the `WorkStore` in `PENDING` status. The `WorkStore`
-has durable Postgres storage — a `WorkItem` written there survives process restarts and
-worker crashes.
-
-From that point, multiple other [logical components](logical_components.md) interact with the `WorkStore` through its
-public methods:
-
-| Component | Operation |
+| Layer | Responsibility |
 |---|---|
-| [Work Executor](work-executor.md) | Creates the initial `WorkItem` record |
-| Work Scheduler | `claim_one()` — atomically moves one item from `PENDING` to `CLAIMED` |
-| [Worker Manager](worker-manager.md) | `set_result()` — writes result and transitions to `COMPLETED` or `FAILED` |
-| [Worker Manager](worker-manager.md) | Records placement failure timestamp to prevent thrashing *(not yet implemented)* |
-| Completion Notifier | Reads terminal items with undelivered callbacks |
-| Startup recovery | `find_undelivered()` — finds terminal items with `NULL signaled_at` |
-| [Worker Manager](worker-manager.md) | `mark_signal_delivered()` — sets `signaled_at` after callback is confirmed |
+| `WorkItemService` | Public Work use cases, client-scoped reads, placement orchestration, terminal-result policy, retry validation, and claim ownership checks |
+| `WorkStore` | SQLAlchemy sessions and engines, row locks, commits and rollbacks, queue selection, atomic state transitions, and transactional completion-outbox writes |
 
----
+Domain operations flow only through `WorkItemService`. Composition roots
+construct `WorkStore` with `from_engine` or `from_database_url` and inject that
+Store into the Service; the Store's other methods are internal persistence
+transitions exercised directly only by Store tests.
 
-## Work item lifecycle
+## Service contract
 
-```
-PENDING → CLAIMED → RUNNING → COMPLETED
-                           → FAILED
-```
+`WorkItemService` exposes:
 
-| Status / phase | Meaning |
-|---|---|
-| `PENDING` | Submitted, waiting to be claimed by a worker |
-| `CLAIMED` | Locked by one worker; Work Scheduler is resolving an `ExecutionTarget` and a `WorkerManager` is being instantiated for it |
-| *(transmitting)* | `ExecutionTarget` set on the `WorkItem`; capacity claimed in the local `ExecutionTargetStore`; work dispatched to infrastructure. Not a recorded status — see [worker-manager.md §Capacity management](worker-manager.md#capacity-management) |
-| `RUNNING` | Work executing in the worker pool |
-| `COMPLETED` | Finished successfully; result stored; Target capacity freed |
-| `FAILED` | Execution error; error detail stored; Target capacity freed |
+- `dispatch`, `get`, `list_for_client`, and `request_cancel` for command and query flows.
+- `reserve_one` and `place_reserved_item` for worker scheduling.
+- `mark_dispatched`, `refresh_claim`, `update_backend_resource`, `set_result`,
+  `mark_reconciliation_required`, and `requeue_pre_execute_failure` for execution.
+- `get_pending_completion_events` and `record_completion_event_attempt` for durable completion delivery.
+- `is_target_drained` for target and Cluster drain finalization.
 
-The capacity claim made during the transmitting phase is held for the life of the job.
-When the completion callback fires — on `COMPLETED` or `FAILED` — the [Worker Manager](worker-manager.md)
-decrements the Target's in-flight count in the `ExecutionTargetStore`. For Targets with a
-fixed `pool_size`, this is the backpressure mechanism: no new work is dispatched to a
-Target whose `current_jobs` has reached `pool_size`.
+The Service validates terminal result statuses and non-negative completion retry
+delays. It resolves Work requirements, revalidates candidate targets, fails a
+reserved item when no target matches, and releases the reservation when every
+candidate becomes ineligible.
 
----
+## Persistence invariants
 
-## Public methods
+`WorkStore` keeps concurrency-sensitive behavior in one transaction:
 
-*(Implemented)*
+- Queue reservation uses `SELECT ... FOR UPDATE SKIP LOCKED` and rotates claim ownership and generation.
+- Target assignment locks the Work item and candidate target/Cluster rows before eligibility is rechecked.
+- Claim fencing rejects stale owners or generations before lifecycle updates.
+- Cancellation and dispatch transitions are serialized against the same locked Work row.
+- Terminal results and their `CompletionEvent` outbox rows are committed together.
+- Lease-expired uncertain work is moved to `RECONCILIATION_REQUIRED` with a durable event.
 
-| Method | Description |
-|---|---|
-| `claim_one()` | Atomically claims one `PENDING` item (`SELECT FOR UPDATE SKIP LOCKED`) |
-| `set_result(item, result, status)` | Writes result dict and transitions status |
-| `mark_signal_delivered(item)` | Sets `signaled_at` after Temporal callback confirmed — called by the Completion Notifier once it has fired the callback. Output collection is the Work Watcher's responsibility; how it handles large or streamed output is not yet designed. |
-| `find_undelivered()` | Finds terminal items with `NULL signaled_at` for startup recovery |
-| `check_ready()` | Health check — verifies DB connectivity and can read work items |
-| `requeue_on_placement_failure(item)` | *(Not yet implemented)* Atomically resets status to `PENDING`, nulls the `ExecutionTarget` reference, and sets `last_placement_failed_at` — single UPDATE, no extra round-trip |
-
----
-
-## Placement failure backoff
-
-*(Not yet implemented)*
-
-When the [Worker Manager](worker-manager.md) fails to place a `WorkItem` on any Target, it records a
-`last_placement_failed_at` timestamp on the `WorkItem`. `claim_one()` considers this
-timestamp and a configured penalty period: if `now − last_placement_failed_at` is less
-than the penalty, the item is skipped. This prevents an unplaceable `WorkItem` from being
-retried on every wakeup — pg_notify fires, multiple concurrent EP workers poll, and the
-5-second interval all create opportunities for thrashing without this hold-off.
-
----
-
-## Open areas
-
-- Cancel / revoke path
+The Store does not accept SQLAlchemy sessions from callers and does not expose
+generic entity mutation. Every method represents an allowed persistence transition.

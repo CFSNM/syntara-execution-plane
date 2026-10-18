@@ -162,7 +162,7 @@ graph LR
 The monitor is a process-owned asyncio loop in the EP worker, started next to
 the Drain Monitor from `run_worker()`. Cancellation in `finally` matches the
 drain monitor. Target drain semantics are in
-[cluster-and-target-registries.md](cluster-and-target-registries.md).
+[cluster-and-target-services.md](cluster-and-target-services.md).
 
 Suggested layout:
 
@@ -246,7 +246,7 @@ One target failure must not abort the scan of remaining targets.
 
 When a target becomes `DEGRADED`, leave work that is already `DISPATCHED` /
 running. The monitor only affects **new** placement. Drain remains the delete
-path. See [cluster-and-target-registries.md](cluster-and-target-registries.md).
+path. See [cluster-and-target-services.md](cluster-and-target-services.md).
 
 ## HealthFilter
 
@@ -324,7 +324,7 @@ Unit tests are the bar. Do not require Kind or OpenShift in CI for this story.
 ## Coordination
 
 - **[AAP-92721](https://redhat.atlassian.net/browse/AAP-92721) ExecutionTarget Reconciler:** replace the no-op `HealthFilter` without changing `resolve()`. Allow `degraded` through `LifecycleFilter`.
-- **[AAP-92716](https://redhat.atlassian.net/browse/AAP-92716) Cluster / ExecutionTarget registries:** `ACTIVE → DEGRADED` is already on the target state diagram in [cluster-and-target-registries.md](cluster-and-target-registries.md). `record_health` is the writer for that edge.
+- **[AAP-92716](https://redhat.atlassian.net/browse/AAP-92716) Cluster / ExecutionTarget Services:** `ACTIVE → DEGRADED` is already on the target state diagram in [cluster-and-target-services.md](cluster-and-target-services.md). `record_health` is the writer for that edge.
 - **[AAP-92722](https://redhat.atlassian.net/browse/AAP-92722) Work Scheduler:** on `NO_MATCHING_TARGETS`, re-queue when any reason is `HEALTH` or `CAPACITY_EXHAUSTED`; fail on selector/lifecycle misses. `CAPACITY_EXHAUSTED` is reserved until a trusted capacity signal exists.
 - **[AAP-93615](https://redhat.atlassian.net/browse/AAP-93615) vanilla Kubernetes Worker Manager:** reuse the Kubernetes client factory; own reactive placement rejection. Do not duplicate bounce-back in the Resource Monitor.
 - **[labels.md](labels.md):** live health is not a label. Do not encode reachability as `healthy=true`.
