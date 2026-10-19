@@ -26,11 +26,11 @@ from execution_plane.commands.context import EPCommandContext
 from execution_plane.commands.queries import EPResourceQueries
 from execution_plane.commands.registry import build_ep_registry
 from execution_plane.config import get_ep_settings
-from execution_plane.execution_target.execution_target_service import (
+from execution_plane.execution_target.execution_target_store import (
     ClusterNotAvailableError,
     DefaultExecutionTargetError,
 )
-from execution_plane.work_item import DuplicateWorkItemError, WorkItemNotFoundError
+from execution_plane.work_item.errors import DuplicateWorkItemError, WorkItemNotFoundError
 from execution_plane_client.catalog import CommandCatalog
 from execution_plane_client.errors import ProtocolConflict, UnsupportedCommand
 from execution_plane_client.protocol import CapabilitiesRead, MessageEnvelope, TransportReceipt

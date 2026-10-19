@@ -17,7 +17,7 @@ from execution_plane_client.protocol import ResourceReference, TransportReceipt
 if TYPE_CHECKING:
     from execution_plane.config import EPSettings
     from execution_plane.models.completion_event import CompletionEvent
-    from execution_plane.work_item import WorkItemService
+    from execution_plane.work_item.work_item_service import WorkItemService
 
 logger = structlog.stdlib.get_logger(__name__)
 

@@ -24,7 +24,7 @@ from execution_plane.models.completion_event import CompletionEvent
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.work_item import WorkItemService
+from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 
 if TYPE_CHECKING:

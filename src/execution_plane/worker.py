@@ -25,7 +25,7 @@ from execution_plane.execution_target_reconciler.exceptions import UnknownBacken
 from execution_plane.execution_target_reconciler.placement import WorkerManagerRegistry
 from execution_plane.models.execution_target import BackendType
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.work_item import WorkItemService
+from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane.worker_manager.vanilla_k8s.manager import (
     NodeExecutionError,

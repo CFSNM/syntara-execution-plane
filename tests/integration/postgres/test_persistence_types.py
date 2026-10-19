@@ -25,7 +25,8 @@ from execution_plane.models.completion_event import CompletionEvent
 from execution_plane.models.constants import EP_SCHEMA
 from execution_plane.models.execution_target import ExecutionTarget as _ExecutionTarget  # noqa: F401
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.work_item import DuplicateWorkItemError, WorkItemService
+from execution_plane.work_item.errors import DuplicateWorkItemError
+from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 
 

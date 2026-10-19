@@ -5,12 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from execution_plane.execution_target.execution_target_store import (
-    ClusterNotAvailableError,
     DefaultExecutionTargetError,
     ExecutionTargetNotFoundError,
 )
-
-__all__ = ["ClusterNotAvailableError", "DefaultExecutionTargetError"]
 
 if TYPE_CHECKING:
     import uuid

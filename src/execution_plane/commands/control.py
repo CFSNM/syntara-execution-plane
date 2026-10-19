@@ -1,7 +1,7 @@
 """Cancel existing work without a command queue or cancellation journal."""
 
 from execution_plane.commands.context import EPCommandContext
-from execution_plane.work_item import WorkItemService
+from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.control import CancelCommand

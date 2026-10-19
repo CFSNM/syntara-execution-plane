@@ -12,7 +12,7 @@ from execution_plane.commands.clusters import ResourceNotFoundError
 from execution_plane.models.cluster import Cluster
 from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane.models.execution_target import ExecutionTarget
-from execution_plane.work_item import WorkItemService
+from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 
 

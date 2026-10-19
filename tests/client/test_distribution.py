@@ -39,7 +39,8 @@ def test_client_wheel_and_sdist_install_without_ep(tmp_path):
             "-I",
             "-c",
             "import json; from importlib.metadata import distributions; "
-            "from execution_plane_client import CommandCatalog, CommandRegistry; "
+            "from execution_plane_client.catalog import CommandCatalog; "
+            "from execution_plane_client.registry import CommandRegistry; "
             "print(json.dumps(sorted(d.metadata['Name'].lower() for d in distributions())))",
         ],
         env={key: value for key, value in os.environ.items() if not key.startswith(("EP_", "PYTHONPATH"))},

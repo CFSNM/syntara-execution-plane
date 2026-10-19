@@ -7,11 +7,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from execution_plane.commands.clusters import ResourceNotFoundError
 from execution_plane.commands.context import EPCommandContext
-from execution_plane.execution_target.execution_target_service import (
-    DefaultExecutionTargetError,
-    ExecutionTargetService,
-)
-from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
+from execution_plane.execution_target.execution_target_service import ExecutionTargetService
+from execution_plane.execution_target.execution_target_store import DefaultExecutionTargetError, ExecutionTargetStore
 from execution_plane.models.cluster import Cluster
 from execution_plane.models.execution_target import BackendType, ExecutionTarget
 from execution_plane.models.execution_target_placement import ExecutionTargetPlacement

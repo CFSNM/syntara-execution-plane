@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
     from execution_plane.cluster.cluster_service import ClusterService
     from execution_plane.execution_target.execution_target_service import ExecutionTargetService
-    from execution_plane.work_item import WorkItemService
+    from execution_plane.work_item.work_item_service import WorkItemService
 
 
 logger = structlog.stdlib.get_logger(__name__)
