@@ -8,7 +8,7 @@ from collections.abc import Callable
 import pytest
 
 from execution_plane.execution_target_reconciler.filters import default_filters
-from execution_plane.execution_target_reconciler.protocols import ExecutionTargetService
+from execution_plane.execution_target_reconciler.protocols import ExecutionTargetSnapshotSource
 from execution_plane.execution_target_reconciler.reconciler import ExecutionTargetReconciler
 from execution_plane.execution_target_reconciler.types import (
     ACTIVE_LIFECYCLE,
@@ -67,8 +67,8 @@ def target_snapshot(
     )
 
 
-class StaticTargetRegistry(ExecutionTargetService):
-    """In-memory ExecutionTargetService Protocol implementation."""
+class StaticTargetSource(ExecutionTargetSnapshotSource):
+    """In-memory ExecutionTargetSnapshotSource Protocol implementation."""
 
     def __init__(self, targets: list[ExecutionTargetSnapshot]) -> None:
         """Hold the ExecutionTarget snapshots to return from list."""
@@ -80,7 +80,7 @@ class StaticTargetRegistry(ExecutionTargetService):
 
 def reconciler_for(targets: list[ExecutionTargetSnapshot]) -> ExecutionTargetReconciler:
     """Build a reconciler over a flat static target list."""
-    return ExecutionTargetReconciler(StaticTargetRegistry(targets), default_filters())
+    return ExecutionTargetReconciler(StaticTargetSource(targets), default_filters())
 
 
 @pytest.fixture
