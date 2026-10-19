@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from execution_plane.cluster.cluster_service import (
     ClusterRegistration,
@@ -25,6 +26,9 @@ LOCAL_TARGET_ENDPOINT = "local://execution-plane/default"
 LOCAL_TARGET_NAMESPACE = "execution"
 LOCAL_API_KEY = "local-execution-plane"
 BOOTSTRAP_ACTOR_ID = uuid.UUID(int=0)
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class LocalClusterBootstrapError(RuntimeError):
@@ -113,7 +117,7 @@ async def bootstrap_local_cluster(
         )
 
 
-def _is_healthy(cluster: Cluster, targets: list[ExecutionTarget]) -> bool:
+def _is_healthy(cluster: Cluster, targets: Sequence[ExecutionTarget]) -> bool:
     """Return whether a Cluster has one usable default target."""
     defaults = [target for target in targets if target.is_default]
     return (
