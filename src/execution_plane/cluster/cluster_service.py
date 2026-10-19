@@ -11,9 +11,11 @@ from execution_plane.models.execution_target import BackendType
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Sequence
 
     from execution_plane.cluster.cluster_store import ClusterStore
     from execution_plane.execution_target.execution_target_service import ExecutionTargetService
+    from execution_plane.models.cluster_binding import ClusterBinding
     from execution_plane.models.execution_target import ExecutionTarget
     from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
@@ -316,6 +318,18 @@ class ClusterService:
     async def list(self, *, status: ClusterStatus | None = None, enabled: bool | None = None) -> list[Cluster]:
         """List Clusters for administrative or recovery workflows."""
         return await self._store.list(status=status, enabled=enabled)
+
+    async def list_bindings_for_client(self, client_id: str, *, limit: int) -> Sequence[ClusterBinding]:
+        """List desired-state bindings owned by one service client."""
+        return await self._store.list_bindings_for_client(client_id, limit=limit)
+
+    async def get_binding_for_client(
+        self,
+        client_id: str,
+        source_integration_id: uuid.UUID,
+    ) -> ClusterBinding | None:
+        """Return one client-owned desired-state binding."""
+        return await self._store.get_binding_for_client(client_id, source_integration_id)
 
     async def request_delete(self, cluster_id: uuid.UUID, updated_by: uuid.UUID) -> Cluster:
         """Disable a Cluster and mark its targets as DRAINING."""

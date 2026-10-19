@@ -10,11 +10,13 @@ from sqlmodel import col
 
 from execution_plane.labels import labels_with_cluster_id, merge_user_labels
 from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
+from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane.models.execution_target import ExecutionTarget, TargetStatus
 from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Sequence
 
 
 class ClusterNotFoundError(LookupError):
@@ -143,6 +145,27 @@ class ClusterStore(StoreBase):
         async with self._session_context() as session:
             result = await session.execute(statement)
             return [self._without_secret(cluster) for cluster in result.scalars().all()]
+
+    async def list_bindings_for_client(self, client_id: str, *, limit: int) -> Sequence[ClusterBinding]:
+        """List desired-state bindings owned by one service client."""
+        statement = (
+            select(ClusterBinding)
+            .where(col(ClusterBinding.client_id) == client_id)
+            .order_by(col(ClusterBinding.created_at), col(ClusterBinding.source_integration_id))
+            .limit(limit)
+        )
+        async with self._session_context() as session:
+            result = await session.execute(statement)
+            return list(result.scalars().all())
+
+    async def get_binding_for_client(
+        self,
+        client_id: str,
+        source_integration_id: uuid.UUID,
+    ) -> ClusterBinding | None:
+        """Return one client-owned desired-state binding."""
+        async with self._session_context() as session:
+            return await session.get(ClusterBinding, (client_id, source_integration_id))
 
     async def update(
         self,

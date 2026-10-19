@@ -11,6 +11,7 @@ from execution_plane.execution_target.execution_target_store import (
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Sequence
 
     from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
@@ -62,7 +63,7 @@ class ExecutionTargetService:
         eligible_only: bool = False,  # noqa: FBT001, FBT002
         status: TargetStatus | None = None,
         limit: int | None = None,
-    ) -> list[ExecutionTarget]:
+    ) -> Sequence[ExecutionTarget]:
         """List targets, optionally restricted to those eligible for new work."""
         return await self._store.list(
             cluster_id=cluster_id,
@@ -70,6 +71,16 @@ class ExecutionTargetService:
             status=status,
             limit=limit,
         )
+
+    async def list_for_client(
+        self,
+        client_id: str,
+        *,
+        limit: int,
+        target_id: uuid.UUID | None = None,
+    ) -> Sequence[ExecutionTarget]:
+        """List targets owned by clusters belonging to one service client."""
+        return await self._store.list_for_client(client_id, limit=limit, target_id=target_id)
 
     async def request_delete(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
         """Disable a non-default target and mark it as DRAINING."""

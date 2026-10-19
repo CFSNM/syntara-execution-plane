@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import pytest
 from sqlalchemy.pool import NullPool
@@ -20,6 +20,9 @@ from execution_plane.models.execution_target import BackendType, ExecutionTarget
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 
 _DATABASE_UNAVAILABLE = "database unavailable"
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def _target(*, is_default: bool = False, status: TargetStatus = TargetStatus.REGISTERING) -> ExecutionTarget:
@@ -125,6 +128,7 @@ class _Store:
         self.delete_requested = False
         self.updated: dict[str, object] = {}
         self.created: dict[str, object] = {}
+        self.client_scoped_queries: list[tuple[str, int, uuid.UUID | None]] = []
         self.get_kwargs: list[dict[str, object]] = []
         self.marked_failed = False
         self.finalized = False
@@ -157,6 +161,12 @@ class _Store:
     async def update(self, _target_id: uuid.UUID, **kwargs: object) -> ExecutionTarget:
         self.updated = kwargs
         return self.target
+
+    async def list_for_client(
+        self, client_id: str, *, limit: int, target_id: uuid.UUID | None = None
+    ) -> Sequence[ExecutionTarget]:
+        self.client_scoped_queries.append((client_id, limit, target_id))
+        return [self.target]
 
 
 @pytest.mark.asyncio
@@ -437,6 +447,18 @@ async def test_service_update_replaces_user_labels_and_preserves_the_target_iden
 
     assert target.labels == {"_execution_target_id": str(target.id), "region": "new"}
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_service_lists_targets_for_the_authenticated_client() -> None:
+    target = _target()
+    store = _Store(target)
+    service = ExecutionTargetService(store)  # type: ignore[arg-type]
+
+    result = await service.list_for_client("client-a", limit=20, target_id=target.id)
+
+    assert result == [target]
+    assert store.client_scoped_queries == [("client-a", 20, target.id)]
 
 
 @pytest.mark.asyncio

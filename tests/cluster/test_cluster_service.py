@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import pytest
 
 from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
+from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 
 _DATABASE_UNAVAILABLE = "database unavailable"
 _TARGET_UNAVAILABLE = "target unavailable"
 _DISCOVERY_UNAVAILABLE = "discovery unavailable"
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def _cluster(*, status: ClusterStatus = ClusterStatus.REGISTERING) -> Cluster:
@@ -257,6 +261,8 @@ class _ClusterStore:
         self.created = False
         self.finalized = False
         self.updates: list[dict[str, object]] = []
+        self.binding: ClusterBinding
+        self.binding_queries: list[tuple[str, int] | tuple[str, uuid.UUID]] = []
 
     async def create(self, *_: object, **__: object) -> Cluster:
         self.created = True
@@ -288,6 +294,14 @@ class _ClusterStore:
 
     async def finalize_delete(self, _cluster_id: uuid.UUID) -> None:
         self.finalized = True
+
+    async def list_bindings_for_client(self, client_id: str, *, limit: int) -> Sequence[ClusterBinding]:
+        self.binding_queries.append((client_id, limit))
+        return [self.binding]
+
+    async def get_binding_for_client(self, client_id: str, source_integration_id: uuid.UUID) -> ClusterBinding | None:
+        self.binding_queries.append((client_id, source_integration_id))
+        return self.binding
 
 
 class _TargetService:
@@ -352,6 +366,59 @@ class _Discovery:
 class _FailingDiscovery:
     def discover(self, _registration: object) -> object:
         raise RuntimeError(_DISCOVERY_UNAVAILABLE)
+
+
+@pytest.mark.asyncio
+async def test_service_lists_cluster_bindings_for_the_authenticated_client() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
+
+    cluster = _cluster()
+    binding = ClusterBinding(
+        client_id="client-a",
+        source_integration_id=uuid.uuid4(),
+        revision=1,
+        name=cluster.name,
+        endpoint=cluster.endpoint,
+        namespace="execution",
+        credential="secret",
+        created_at=cluster.created_at,
+        updated_at=cluster.updated_at,
+    )
+    store = _ClusterStore(cluster)
+    store.binding = binding
+    service = ClusterService(store, _TargetService(), _Discovery(object()))  # type: ignore[arg-type]
+
+    result = await service.list_bindings_for_client("client-a", limit=20)
+
+    assert result == [binding]
+    assert store.binding_queries == [("client-a", 20)]
+
+
+@pytest.mark.asyncio
+async def test_service_reads_one_cluster_binding_for_the_authenticated_client() -> None:
+    from execution_plane.cluster.cluster_service import ClusterService
+
+    cluster = _cluster()
+    integration_id = uuid.uuid4()
+    binding = ClusterBinding(
+        client_id="client-a",
+        source_integration_id=integration_id,
+        revision=1,
+        name=cluster.name,
+        endpoint=cluster.endpoint,
+        namespace="execution",
+        credential="secret",
+        created_at=cluster.created_at,
+        updated_at=cluster.updated_at,
+    )
+    store = _ClusterStore(cluster)
+    store.binding = binding
+    service = ClusterService(store, _TargetService(), _Discovery(object()))  # type: ignore[arg-type]
+
+    result = await service.get_binding_for_client("client-a", integration_id)
+
+    assert result is binding
+    assert store.binding_queries == [("client-a", integration_id)]
 
 
 @pytest.mark.asyncio

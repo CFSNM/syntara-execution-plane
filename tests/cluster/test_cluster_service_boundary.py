@@ -37,6 +37,7 @@ def test_production_code_uses_cluster_service_not_cluster_store() -> None:
         source_root / "bootstrap.py",
         source_root / "worker.py",
         source_root / "cluster" / "binding_reconciler.py",
+        source_root / "commands" / "queries.py",
     }
     production_files = [path for path in source_root.rglob("*.py") if path not in internal_cluster_files]
 

@@ -38,6 +38,7 @@ def test_production_code_uses_execution_target_service_not_execution_target_stor
         source_root / "worker.py",
         source_root / "cluster" / "binding_reconciler.py",
         source_root / "commands" / "targets.py",
+        source_root / "commands" / "queries.py",
     }
     production_files = [path for path in source_root.rglob("*.py") if path not in internal_target_files]
 

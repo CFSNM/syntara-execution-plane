@@ -17,6 +17,7 @@ from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Sequence
 
     from execution_plane.models.execution_target_placement import (
         ExecutionTargetPlacement,
@@ -138,7 +139,7 @@ class ExecutionTargetStore(StoreBase):
         eligible_only: bool = False,  # noqa: FBT001, FBT002
         status: TargetStatus | None = None,
         limit: int | None = None,
-    ) -> list[ExecutionTarget]:
+    ) -> Sequence[ExecutionTarget]:
         """List targets, optionally restricting results to work-eligible targets."""
         statement = select(ExecutionTarget)
         if cluster_id is not None:
@@ -159,6 +160,22 @@ class ExecutionTargetStore(StoreBase):
             result = await session.execute(statement)
             targets = list(result.scalars().all())
             return [self._without_secret(target) for target in targets]
+
+    async def list_for_client(
+        self,
+        client_id: str,
+        *,
+        limit: int,
+        target_id: uuid.UUID | None = None,
+    ) -> Sequence[ExecutionTarget]:
+        """List targets owned by clusters belonging to one service client."""
+        statement = select(ExecutionTarget).join(Cluster).where(col(Cluster.source_client_id) == client_id)
+        if target_id is not None:
+            statement = statement.where(col(ExecutionTarget.id) == target_id)
+        statement = statement.order_by(col(ExecutionTarget.created_at), col(ExecutionTarget.id)).limit(limit)
+        async with self._session_context() as session:
+            result = await session.execute(statement)
+            return [self._without_secret(target) for target in result.scalars().all()]
 
     async def request_delete(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
         """Disable a non-default target and move it to DRAINING."""
