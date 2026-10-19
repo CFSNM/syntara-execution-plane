@@ -262,6 +262,18 @@ The reconciler does not interpret key names. Default routing uses
 `is_default`, not a reserved label. Cluster identity is a Cluster
 label like any other; it is not a reserved matcher key.
 
+Keys beginning with an underscore are internal to EP. Command callers
+cannot set or replace them. EP adds two immutable identity labels when it
+creates the corresponding database rows:
+
+| Resource | Label | Value |
+|---|---|---|
+| Cluster | `_cluster_id` | `Cluster.id` |
+| ExecutionTarget | `_execution_target_id` | `ExecutionTarget.id` |
+
+AO may use those values as exact-match work selectors. Updates replace only
+public (non-underscore) labels and always retain these identity labels.
+
 The keys used in [examples/](examples/) (`region`, `env`,
 `backend_type`, `cluster`) are readable stand-ins, not the final
 names.

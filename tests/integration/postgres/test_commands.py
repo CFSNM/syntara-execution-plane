@@ -200,6 +200,81 @@ async def test_cluster_update_preserves_omitted_fields_and_rejects_null_required
         assert row.revision == 2
 
 
+async def test_cluster_commands_cleanse_internal_labels(command_client):
+    client, sessions = command_client
+    key = uuid4()
+    payload = {
+        "resource_key": str(key),
+        "desired_revision": 1,
+        "name": "test",
+        "endpoint": "https://cluster.test",
+        "namespace": "ep",
+        "credential": "secret",
+        "labels": {"team": "platform", "_cluster_id": "spoofed", "_internal": "spoofed"},
+    }
+    assert (await client.post("/v1/commands", json=command_message("cluster.register", payload))).status_code == 202
+    async with sessions() as session:
+        assert (await session.get(ClusterBinding, ("ao", key))).labels == {"team": "platform"}
+
+    patch = {
+        "resource_key": str(key),
+        "desired_revision": 2,
+        "labels": {"team": "runtime", "_cluster_id": "spoofed", "_internal": "spoofed"},
+    }
+    assert (await client.post("/v1/commands", json=command_message("cluster.update", patch))).status_code == 202
+    async with sessions() as session:
+        assert (await session.get(ClusterBinding, ("ao", key))).labels == {"team": "runtime"}
+
+
+async def test_target_commands_add_and_preserve_the_target_identity_label(command_client):
+    from datetime import UTC, datetime
+
+    from execution_plane.models.cluster import Cluster, ClusterStatus
+
+    client, sessions = command_client
+    now = datetime.now(UTC)
+    cluster_id, target_id = uuid4(), uuid4()
+    async with sessions.begin() as session:
+        session.add(
+            Cluster(
+                id=cluster_id,
+                name=str(cluster_id),
+                endpoint="https://cluster.test",
+                api_key="secret",
+                source_client_id="ao",
+                status=ClusterStatus.ACTIVE,
+                created_by=uuid4(),
+                updated_by=uuid4(),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    payload = {
+        "resource_id": str(target_id),
+        "cluster_id": str(cluster_id),
+        "name": "workers",
+        "backend_type": "vanilla_k8s",
+        "endpoint": "https://cluster.test",
+        "credential": "secret",
+        "placement": {"type": "kubernetes", "namespace": "ep"},
+        "labels": {"region": "eu-west", "_execution_target_id": "spoofed", "_internal": "spoofed"},
+    }
+    created = await client.post("/v1/commands", json=command_message("execution_target.register", payload))
+    assert created.status_code == 202, created.text
+    read = await client.get(f"/v1/execution-targets/{target_id}")
+    assert read.json()["labels"] == {"region": "eu-west", "_execution_target_id": str(target_id)}
+
+    patch = {
+        "resource_id": str(target_id),
+        "labels": {"region": "us-east", "_execution_target_id": "spoofed", "_internal": "spoofed"},
+    }
+    assert (
+        await client.post("/v1/commands", json=command_message("execution_target.update", patch))
+    ).status_code == 202
+    read = await client.get(f"/v1/execution-targets/{target_id}")
+    assert read.json()["labels"] == {"region": "us-east", "_execution_target_id": str(target_id)}
+
+
 async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(command_client):
     from datetime import UTC, datetime
 

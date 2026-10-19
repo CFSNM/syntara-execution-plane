@@ -65,6 +65,7 @@ async def test_new_binding_namespace_becomes_typed_kubernetes_placement() -> Non
 @pytest.mark.asyncio
 async def test_binding_update_keeps_namespace_in_request_and_sends_typed_placement() -> None:
     binding = _binding()
+    binding.labels = {"region": "eu-west"}
     cluster = _cluster()
     cluster_store = AsyncMock()
     cluster_store.update_source_binding.return_value = cluster
@@ -77,5 +78,6 @@ async def test_binding_update_keeps_namespace_in_request_and_sends_typed_placeme
     placement = sync_update.call_args.kwargs["placement"]
     assert isinstance(placement, KubernetesPlacement)
     assert placement.namespace == binding.namespace
+    assert sync_update.call_args.kwargs["labels"] == binding.labels
     assert status == "ready"
     assert cluster_id == cluster.id

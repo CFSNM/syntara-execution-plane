@@ -155,6 +155,23 @@ async def test_create_preserves_database_rejection_for_a_duplicate_endpoint() ->
 
 
 @pytest.mark.asyncio
+async def test_create_adds_the_cluster_identity_label_and_cleanses_user_labels() -> None:
+    session = _Session()
+    store = _store(session)
+
+    cluster = await store.create(
+        "cluster-a",
+        "https://cluster.example",
+        "secret",
+        uuid.uuid4(),
+        {"region": "eu-west", "_cluster_id": "user-supplied", "_internal": "user-supplied"},
+    )
+
+    assert cluster.labels == {"region": "eu-west", "_cluster_id": str(cluster.id)}
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_list_redacts_clusters_and_supports_status_and_enabled_filters() -> None:
     cluster = _cluster()
     store = _store(_Session())
@@ -339,6 +356,22 @@ async def test_update_leaves_unspecified_fields_unchanged() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_replaces_user_labels_and_preserves_the_cluster_identity_label() -> None:
+    cluster = _cluster()
+    cluster.labels = {"_cluster_id": str(cluster.id), "region": "old", "team": "old"}
+    store = _store(_Session(cluster=cluster))
+
+    await store.update(
+        cluster.id,
+        updated_by=uuid.uuid4(),
+        labels={"region": "new", "_cluster_id": "spoofed", "_internal": "spoofed"},
+    )
+
+    assert cluster.labels == {"_cluster_id": str(cluster.id), "region": "new"}
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_update_rolls_back_for_a_missing_cluster() -> None:
     session = _Session()
     store = _store(session)
@@ -387,6 +420,22 @@ async def test_reactivate_re_enables_a_draining_cluster() -> None:
     assert cluster.labels == {"env": "dev"}
     assert cluster.updated_by == actor_id
     assert result.api_key == ""
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_reactivate_preserves_the_cluster_identity_label() -> None:
+    cluster = _cluster(status=ClusterStatus.DRAINING)
+    cluster.labels = {"_cluster_id": str(cluster.id), "region": "old"}
+    store = _store(_Session(cluster=cluster))
+
+    await store.reactivate(
+        cluster.id,
+        updated_by=uuid.uuid4(),
+        labels={"region": "new", "_cluster_id": "spoofed", "_internal": "spoofed"},
+    )
+
+    assert cluster.labels == {"_cluster_id": str(cluster.id), "region": "new"}
     await store.close()
 
 

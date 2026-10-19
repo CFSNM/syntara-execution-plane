@@ -168,6 +168,7 @@ class ClusterBindingReconciler:
             endpoint=binding.endpoint,
             api_key=binding.credential,
             placement=KubernetesPlacement(namespace=binding.namespace),
+            labels=binding.labels,
         )
         current = await self._cluster_store.update_source_binding(
             current.id,

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlmodel import col
 
+from execution_plane.labels import labels_with_cluster_id, merge_user_labels
 from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
 from execution_plane.models.execution_target import ExecutionTarget, TargetStatus
 from execution_plane.store_base import StoreBase
@@ -61,13 +62,14 @@ class ClusterStore(StoreBase):
             source_integration_id=source_integration_id,
             source_revision=source_revision,
             project_ids=project_ids,
-            labels=labels or {},
+            labels={},
             status=ClusterStatus.REGISTERING,
             created_by=created_by,
             created_at=now,
             updated_by=created_by,
             updated_at=now,
         )
+        cluster.labels = labels_with_cluster_id(labels, cluster.id)
         async with self._session_context() as session:
             try:
                 session.add(cluster)
@@ -151,6 +153,7 @@ class ClusterStore(StoreBase):
         endpoint: str | None = None,
         api_key: str | None = None,
         ca_certificate: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> Cluster:
         """Update mutable cluster fields."""
         async with self._session_context() as session:
@@ -166,6 +169,8 @@ class ClusterStore(StoreBase):
                     cluster.api_key = api_key
                 if ca_certificate is not None:
                     cluster.ca_certificate = ca_certificate
+                if labels is not None:
+                    cluster.labels = merge_user_labels(cluster.labels, labels)
                 cluster.updated_by = updated_by
                 cluster.updated_at = datetime.now(UTC)
                 await session.commit()
@@ -200,7 +205,7 @@ class ClusterStore(StoreBase):
                 if ca_certificate is not None:
                     cluster.ca_certificate = ca_certificate
                 if labels is not None:
-                    cluster.labels = labels
+                    cluster.labels = merge_user_labels(cluster.labels, labels)
                 cluster.updated_by = updated_by
                 cluster.updated_at = datetime.now(UTC)
                 await session.commit()

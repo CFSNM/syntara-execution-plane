@@ -277,6 +277,28 @@ async def test_create_allows_a_new_target_on_an_active_cluster() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_adds_the_target_identity_label_and_cleanses_user_labels() -> None:
+    target = _target()
+    session = _Session(cluster=_cluster(status=ClusterStatus.ACTIVE))
+    store = _store(session)
+
+    result = await store.create(
+        target.cluster_id,
+        target.name,
+        target.backend_type,
+        target.endpoint,
+        target.api_key,
+        is_default=False,
+        created_by=uuid.uuid4(),
+        placement=target.placement,
+        labels={"region": "eu-west", "_execution_target_id": "user-supplied", "_internal": "user-supplied"},
+    )
+
+    assert result.labels == {"region": "eu-west", "_execution_target_id": str(result.id)}
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_a_missing_cluster() -> None:
     class MissingClusterSession(_Session):
         async def get(self, model: object, _target_id: uuid.UUID, **kwargs: object) -> ExecutionTarget | Cluster | None:
@@ -398,6 +420,22 @@ async def test_update_can_replace_api_key_and_rejects_missing_target() -> None:
     assert missing_session.rollbacks == 1
     await store.close()
     await missing_store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_replaces_user_labels_and_preserves_the_target_identity_label() -> None:
+    target = _target()
+    target.labels = {"_execution_target_id": str(target.id), "region": "old", "team": "old"}
+    store = _store(_Session(result=_Result(target)))
+
+    await store.update(
+        target.id,
+        updated_by=uuid.uuid4(),
+        labels={"region": "new", "_execution_target_id": "spoofed", "_internal": "spoofed"},
+    )
+
+    assert target.labels == {"_execution_target_id": str(target.id), "region": "new"}
+    await store.close()
 
 
 @pytest.mark.asyncio

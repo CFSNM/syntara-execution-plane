@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from execution_plane.commands.context import EPCommandContext
+from execution_plane.labels import user_labels
 from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.clusters import ClusterDelete, ClusterRegister, ClusterUpdate
@@ -45,12 +46,13 @@ class ClusterCommandHandler:
                     values.update(payload.model_dump(exclude_unset=True, exclude={"resource_key", "desired_revision"}))
                 else:
                     values["enabled"] = False
+                values["labels"] = user_labels(values["labels"])
                 # Validate the complete configuration after merging with persisted state.
                 desired = ClusterRegister(
                     resource_key=payload.resource_key, desired_revision=payload.desired_revision, **values
                 )
             else:
-                desired = payload
+                desired = payload.model_copy(update={"labels": user_labels(payload.labels)})
             if binding is not None and desired.desired_revision < binding.revision:
                 raise ProtocolConflict
             if binding is not None and desired.desired_revision == binding.revision:

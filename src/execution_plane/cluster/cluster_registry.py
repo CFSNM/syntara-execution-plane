@@ -252,13 +252,21 @@ class ClusterRegistry:
         endpoint: str | None = None,
         api_key: str | None = None,
         placement: ExecutionTargetPlacement | None = None,
+        labels: dict[str, str] | None = None,
     ) -> None:
         """Update a cluster and its default execution target.
 
         Only non-None fields are written. Operates via independent store
         transactions; all changes must be idempotent against concurrent reads.
         """
-        await self._store.update(cluster_id, updated_by=updated_by, name=name, endpoint=endpoint, api_key=api_key)
+        await self._store.update(
+            cluster_id,
+            updated_by=updated_by,
+            name=name,
+            endpoint=endpoint,
+            api_key=api_key,
+            labels=labels,
+        )
         default_target = await self.get_default_target(cluster_id)
         if default_target is None:
             return

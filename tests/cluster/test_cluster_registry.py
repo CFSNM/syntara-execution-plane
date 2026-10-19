@@ -254,12 +254,14 @@ class _ClusterStore:
         self.states: list[tuple[ClusterStatus, str | None]] = []
         self.created = False
         self.finalized = False
+        self.updates: list[dict[str, object]] = []
 
     async def create(self, *_: object, **__: object) -> Cluster:
         self.created = True
         return self.cluster
 
-    async def update(self, *_: object, **__: object) -> Cluster:
+    async def update(self, *_: object, **kwargs: object) -> Cluster:
+        self.updates.append(kwargs)
         return self.cluster
 
     async def record_discovery_state(
@@ -545,6 +547,25 @@ async def test_sync_update_forwards_placement_patch_to_target_registry() -> None
     assert placement.namespace == "updated"
     assert placement.node_selectors == []
     assert placement.tolerations == []
+
+
+@pytest.mark.asyncio
+async def test_sync_update_forwards_cluster_labels_to_the_cluster_store() -> None:
+    from execution_plane.cluster.cluster_registry import ClusterRegistry
+
+    cluster = _cluster()
+    target = _target(cluster_id=cluster.id, is_default=True)
+    targets = _TargetRegistry(targets=[target])
+    store = _ClusterStore(cluster)
+    registry = ClusterRegistry(store, targets, _Discovery(object()))  # type: ignore[arg-type]
+
+    await registry.sync_update(
+        cluster.id,
+        updated_by=uuid.uuid4(),
+        labels={"region": "eu-west", "_cluster_id": "spoofed"},
+    )
+
+    assert store.updates[0]["labels"] == {"region": "eu-west", "_cluster_id": "spoofed"}
 
 
 def test_noop_discovery_returns_a_failed_result() -> None:

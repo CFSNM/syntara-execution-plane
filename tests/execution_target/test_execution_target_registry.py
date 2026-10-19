@@ -173,7 +173,7 @@ async def test_store_creates_target_with_audit_fields_and_owns_the_commit() -> N
     assert target.cluster_id == cluster_id
     assert target.created_by == creator_id
     assert target.updated_by == creator_id
-    assert target.labels == {"region": "eu-west"}
+    assert target.labels == {"region": "eu-west", "_execution_target_id": str(target.id)}
     assert isinstance(target.placement, KubernetesPlacement)
     assert target.placement.namespace == "execution"
     assert target.api_key == ""

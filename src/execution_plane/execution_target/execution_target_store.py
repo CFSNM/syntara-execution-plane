@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 
+from execution_plane.labels import labels_with_execution_target_id, merge_user_labels
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
@@ -90,7 +91,7 @@ class ExecutionTargetStore(StoreBase):
             placement=placement,
             api_key=api_key,
             is_default=is_default,
-            labels=labels or {},
+            labels={},
             created_by=created_by,
             created_at=now,
             updated_by=created_by,
@@ -98,6 +99,7 @@ class ExecutionTargetStore(StoreBase):
         )
         if target_id is not None:
             target.id = target_id
+        target.labels = labels_with_execution_target_id(labels, target.id)
 
         async with self._session_context() as session:
             try:
@@ -221,7 +223,7 @@ class ExecutionTargetStore(StoreBase):
                 if placement is not None:
                     target.placement = self._merge_placement(target.placement, placement)
                 if labels is not None:
-                    target.labels = labels
+                    target.labels = merge_user_labels(target.labels, labels)
                 if status_message is not None:
                     target.status_message = status_message
                 if api_key is not None:
