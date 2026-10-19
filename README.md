@@ -100,8 +100,9 @@ Per-integration Kubernetes API trust roots are stored encrypted in EP.
 
 The target-cluster service account needs `create/get/delete` on Jobs, `list` on
 Pods, `get` on `pods/portforward`, and `create/get/list/patch/delete` on
-NetworkPolicies. It does not need workload Secret, Pod-log, or Pod-exec
-permissions. That Role is `deploy/kubernetes/execution-target/rbac.yaml`.
+NetworkPolicies, plus cluster-scoped `get` on Namespaces for the Resource
+Monitor. It does not need workload Secret, Pod-log, or Pod-exec permissions.
+That Role is `deploy/kubernetes/execution-target/rbac.yaml`.
 `EP_WORKLOAD_ALLOWED_EGRESS_CIDRS` is an operator-reviewed JSON list of
 destinations the workload may reach; without it, workloads can resolve DNS but
 have no general egress. If a whole IP family is allowed, also set

@@ -18,6 +18,8 @@ def test_dispatcher_rbac_manifest_exists() -> None:
         ("ServiceAccount", "syntara-dispatcher"),
         ("Role", "syntara-node-dispatcher"),
         ("RoleBinding", "syntara-node-dispatcher"),
+        ("ClusterRole", "syntara-resource-monitor"),
+        ("ClusterRoleBinding", "syntara-resource-monitor"),
     }
 
 
@@ -34,3 +36,9 @@ def test_dispatcher_role_matches_vanilla_k8s_transport() -> None:
     assert "secrets" not in resources
     assert "pods/log" not in resources
     assert "pods/exec" not in resources
+
+
+def test_resource_monitor_cluster_role_can_get_namespaces() -> None:
+    role = next(doc for doc in _resources() if doc["kind"] == "ClusterRole")
+    rules = {(tuple(rule["apiGroups"]), tuple(rule["resources"]), tuple(rule["verbs"])) for rule in role["rules"]}
+    assert rules == {(("",), ("namespaces",), ("get",))}

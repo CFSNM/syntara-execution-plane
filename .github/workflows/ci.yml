@@ -171,7 +171,7 @@ jobs:
       # Stand up a throwaway kind cluster. The dispatcher ServiceAccount and RBAC
       # in deploy/kubernetes/execution-target/rbac.yaml grant the bearer token
       # the permissions the vanilla-k8s transport needs (pod list, portforward,
-      # job CRUD).
+      # job CRUD) and Resource Monitor namespace GET.
       - name: Create kind cluster
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:

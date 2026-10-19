@@ -430,6 +430,8 @@ kubectl get namespace "${NAMESPACE}"
 kubectl get serviceaccount "${SA_NAME}" -n "${NAMESPACE}"
 kubectl get role syntara-node-dispatcher -n "${NAMESPACE}"
 kubectl get rolebinding syntara-node-dispatcher -n "${NAMESPACE}"
+kubectl get clusterrole syntara-resource-monitor
+kubectl get clusterrolebinding syntara-resource-monitor
 
 DISPATCHER_AS="system:serviceaccount:${NAMESPACE}:${SA_NAME}"
 
@@ -442,6 +444,18 @@ fi
 echo "=== RBAC: list pods in ${NAMESPACE} (must be yes) ==="
 if ! kubectl auth can-i list pods --as="${DISPATCHER_AS}" -n "${NAMESPACE}"; then
   echo "ERROR: ${SA_NAME} cannot list pods in ${NAMESPACE}" >&2
+  exit 1
+fi
+
+echo "=== RBAC: get namespaces (must be yes) ==="
+if ! kubectl auth can-i get namespaces --as="${DISPATCHER_AS}"; then
+  echo "ERROR: ${SA_NAME} cannot get namespaces for the Resource Monitor probe" >&2
+  exit 1
+fi
+
+echo "=== RBAC: list namespaces (must be no) ==="
+if kubectl auth can-i list namespaces --as="${DISPATCHER_AS}"; then
+  echo "ERROR: ${SA_NAME} can list namespaces; ClusterRole is too wide" >&2
   exit 1
 fi
 

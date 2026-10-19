@@ -295,7 +295,8 @@ Until AAP-92722 lands, producing `HEALTH` is still the correct filter contract.
 
 ## Testing
 
-Unit tests are the bar. Do not require Kind or OpenShift in CI for this story.
+Unit tests are the bar for probe mapping and hysteresis. Kind CI already has a
+cluster; `tests/integration/kind/test_resource_monitor.py` probes it.
 
 - Probe: HTTP outcomes listed above; skip rules.
 - `record_health`: legal `ACTIVE ↔ DEGRADED` transitions; ignored writes on
@@ -315,7 +316,7 @@ Unit tests are the bar. Do not require Kind or OpenShift in CI for this story.
 - Work Scheduler consumption of `HEALTH` ([AAP-92722](https://redhat.atlassian.net/browse/AAP-92722)) — this story only produces the reason
 - Isolation Policy ([AAP-92726](https://redhat.atlassian.net/browse/AAP-92726))
 - Frontend topology view
-- Kind / OpenShift integration tests unless a cluster is already in CI
+- Kind / OpenShift integration tests beyond the existing Kind CI job
 - Changing `WorkerManager.dispatch`
 
 ## Coordination
