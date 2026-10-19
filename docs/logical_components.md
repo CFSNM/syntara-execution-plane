@@ -96,7 +96,7 @@ graph LR
 
 - **[Worker Manager](worker-manager.md)**
   - In: `WorkItem` (instantiated by Work Scheduler for a specific `ExecutionTarget`; configured at construction, not passed at dispatch time)
-  - Out: work submitted to the cluster API; placement failure recorded to [`WorkItemService`](work-store.md); bounce-back state written to `ExecutionTargetStore` on infrastructure rejection. On successful start, hands off to Work Watcher.
+  - Out: work submitted to the cluster API; placement failure recorded to [`WorkItemService`](work-store.md); bounce-back state written to `ExecutionTargetService` on infrastructure rejection. On successful start, hands off to Work Watcher.
 
 - **Work Watcher** *(placeholder — not yet designed)*
   - In: hand-off from Work Scheduler after a `WorkItem` is successfully started
