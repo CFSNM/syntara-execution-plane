@@ -289,7 +289,7 @@ physical finalization.
 
 ### Cluster deletion
 
-`ClusterService.delete(cluster_id)` performs one transaction that:
+`ClusterService.request_delete(cluster_id)` performs one transaction that:
 
 1. Loads the Cluster and verifies its existence.
 2. Handles repeated requests according to the API's idempotency convention.
@@ -298,43 +298,43 @@ physical finalization.
    `enabled=False` and `status=DRAINING`.
 5. Updates audit fields and commits.
 
-The request returns the Cluster in its draining state. It does not wait for
-workers and does not physically delete database rows.
+The request returns the Cluster in its draining state. It does not launch a
+drain task, wait for workers, or physically delete database rows.
 
 The following sequence shows both the Cluster-wide and individual target
 lifecycles. In either case, disabling the target closes the selection path
-before the Service waits for active work to finish.
+before `DrainMonitor` waits for active work to finish.
 
 ```mermaid
 sequenceDiagram
     participant C as Caller
     participant CR as ClusterService
     participant TR as ExecutionTargetService
+    participant DM as DrainMonitor
+    participant WR as WorkItemService
     participant CS as ClusterStore
     participant TS as ExecutionTargetStore
     participant DB as execution_plane DB
-    participant W as Workers and WorkItems
 
     alt Delete Cluster
-        C->>CR: delete(cluster_id)
+        C->>CR: request_delete(cluster_id)
         CR->>CS: request_delete(cluster_id)
         CS->>DB: Mark Cluster and all targets (including default) disabled/DRAINING
         DB-->>CS: Commit drain request
         CS-->>CR: Draining Cluster
         CR-->>C: DRAINING
-        Note over CR: Launch asyncio drain task
+        DM->>CR: List DRAINING Clusters
+        DM->>TR: List targets for the Cluster
         loop Until every target is drained
-            CR->>W: Poll active workers and associated work
-            W-->>CR: Still active or drained
+            DM->>WR: is_target_drained(target_id)
+            WR-->>DM: Still active or drained
             opt Target drained
-                CR->>TS: finalize_delete(target_id)
-                TS->>DB: Delete target
+                DM->>TR: finalize_delete(target_id)
             end
         end
-        CR->>CS: finalize_delete(cluster_id)
-        CS->>DB: Delete Cluster with no remaining targets
+        DM->>CR: finalize_delete(cluster_id)
     else Delete non-default ExecutionTarget
-        C->>TR: delete(target_id)
+        C->>TR: request_delete(target_id)
         TR->>TR: Verify target is not the default
         alt is default target
             TR-->>C: Rejected — default target cannot be directly deleted
@@ -344,30 +344,29 @@ sequenceDiagram
             DB-->>TS: Commit drain request
             TS-->>TR: Draining target
             TR-->>C: DRAINING
-            Note over TR: Launch asyncio drain task
+            DM->>TR: List DRAINING targets
             loop Until target is drained
-                TR->>W: Poll active workers and associated work
-                W-->>TR: Still active or drained
+                DM->>WR: is_target_drained(target_id)
+                WR-->>DM: Still active or drained
             end
-            TR->>TS: finalize_delete(target_id)
-            TS->>DB: Delete target
-            TS-->>TR: Deleted
+            DM->>TR: finalize_delete(target_id)
         end
     end
 ```
 
-The ClusterService's drain operation finds draining Clusters, relies on target
-eligibility filtering to prevent new work, and polls each target until the
-target's active workers and associated work have completed naturally. For each
-drained target it calls `ExecutionTargetStore.finalize_delete`. The Cluster is
-deleted only after all related targets have been removed.
+`DrainMonitor` owns drain polling in the worker process. It finds draining
+Clusters through `ClusterService`, relies on target eligibility filtering to
+prevent new work, and asks `WorkItemService` whether each target's active
+workers and associated work have completed naturally. For each drained target
+it calls `ExecutionTargetService.finalize_delete`. A Cluster is deleted through
+`ClusterService.finalize_delete` only after all related targets have been
+removed.
 
-Drain polling runs as asyncio tasks initiated by `ClusterService`. For a
-Cluster deletion, one task per ExecutionTarget is launched and gathered; for an
-individual target deletion, a single task is launched. On startup of the
-Execution Plane, a recovery pass finds all Clusters and ExecutionTargets in
-`DRAINING` and re-launches their drain tasks, following the same
-startup-recovery pattern used by `_recover_undelivered` in `worker.py`.
+Drain polling runs as asyncio tasks initiated and supervised by `DrainMonitor`.
+For a Cluster deletion, one task coordinates all of that Cluster's targets; for
+an individual target deletion, a single task is launched. `DrainMonitor.start`
+performs a recovery scan for persisted `DRAINING` Clusters and ExecutionTargets,
+and its monitor loop continues observing newly requested drains.
 
 If a drain operation fails irrecoverably, the affected Cluster or
 ExecutionTarget transitions to `ERROR`. `ERROR` is a terminal state requiring
@@ -375,16 +374,17 @@ operator intervention to resolve.
 
 ### ExecutionTarget deletion
 
-`ExecutionTargetService.delete(target_id)` performs the target equivalent:
+`ExecutionTargetService.request_delete(target_id)` performs the target request:
 
 1. It rejects direct deletion of the protected default target. The default
    target is removed only as part of a Cluster deletion.
 2. It marks the target `enabled=False` and `status=DRAINING` in a transaction.
 3. It updates audit fields and returns or exposes the draining state.
-4. It launches an asyncio drain task that polls until all active workers and
-   associated work have completed naturally.
-5. After the drained predicate is satisfied, it delegates physical deletion to
-   `ExecutionTargetStore.finalize_delete` and exits.
+4. It returns without launching a drain task.
+5. `DrainMonitor` observes the draining target and asks `WorkItemService`
+   whether its active workers and associated work have completed naturally.
+6. After the drained predicate is satisfied, `DrainMonitor` delegates physical
+   deletion to `ExecutionTargetService.finalize_delete`.
 
 The drained predicate is a worker/lifecycle concern and must account for the
 WorkItem states and worker ownership semantics. Until the predicate is true,
@@ -394,9 +394,10 @@ from selection.
 ## Persistence and Service boundaries
 
 Services are the domain-facing boundary; stores are the database-facing
-boundary. A Service may coordinate discovery mechanisms and drain polling,
-but only a store creates sessions, executes persistence operations, and commits
-or rolls back transactions.
+boundary. `ClusterService` may coordinate discovery mechanisms, while the
+process-owned `DrainMonitor` coordinates drain polling through Services. Only a
+store creates sessions, executes persistence operations, and commits or rolls
+back transactions.
 
 Outside the Cluster package, production code references `ClusterStore` only in
 composition roots that construct it with `from_engine` or `from_database_url`
@@ -415,7 +416,7 @@ lifecycle, drain, and deletion operations.
 flowchart LR
     Caller[Router or domain caller]
 
-    subgraph Registries[Domain boundary]
+    subgraph Services[Domain boundary]
         CR[ClusterService]
         TR[ExecutionTargetService]
         WR[WorkItemService]
@@ -461,7 +462,7 @@ mechanism and does not create ExecutionTargets.
 `ExecutionTargetStore` provides target creation, retrieval, listing with
 optional eligibility filtering, narrow metadata updates, drain requests, and
 physical finalization. `finalize_delete` is callable only after the Service's
-drain operation has established that the target is safe to remove.
+drain monitor has established that the target is safe to remove.
 
 ### Services
 
