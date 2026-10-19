@@ -1,5 +1,8 @@
 """Tests for execution-plane configuration."""
 
+import pytest
+from pydantic import ValidationError
+
 from execution_plane.config import EPSettings, to_asyncpg_url
 
 
@@ -23,3 +26,14 @@ def test_ep_settings_has_cold_start_and_network_defaults() -> None:
     assert settings.node_startup_seconds == 120
     assert settings.node_grace_seconds == 30
     assert settings.workload_allowed_egress_cidrs == []
+    assert settings.resource_monitor_interval_seconds == 30.0
+    assert settings.resource_monitor_probe_timeout_seconds == 10.0
+    assert settings.resource_monitor_failure_threshold == 3
+    assert settings.resource_monitor_success_threshold == 2
+
+
+def test_resource_monitor_timeout_must_be_shorter_than_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EP_RESOURCE_MONITOR_INTERVAL_SECONDS", "5")
+    monkeypatch.setenv("EP_RESOURCE_MONITOR_PROBE_TIMEOUT_SECONDS", "5")
+    with pytest.raises(ValidationError, match="shorter than"):
+        EPSettings()

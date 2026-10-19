@@ -38,11 +38,10 @@ structured result: the **set of eligible ExecutionTargets**. It does not
 order that set or pick a winner.
 
 For MVP, eligibility is selector matching plus ExecutionTarget lifecycle
-state (only active targets are eligible). Health-based exclusion
-([AAP-92724](https://redhat.atlassian.net/browse/AAP-92724) Resource Monitor)
-and policy-based filtering ([AAP-92726](https://redhat.atlassian.net/browse/AAP-92726)
-Isolation Policy) are deferred; their interfaces are reserved so they can
-land without breaking changes.
+state. `HealthFilter` excludes `degraded` targets
+([AAP-92724](https://redhat.atlassian.net/browse/AAP-92724) Resource Monitor).
+Policy-based filtering ([AAP-92726](https://redhat.atlassian.net/browse/AAP-92726)
+Isolation Policy) remains a reserved no-op.
 
 The reconciler is a **pure query**. It does not claim workers, mutate work
 items, or retry. The Work Scheduler ([AAP-92722](https://redhat.atlassian.net/browse/AAP-92722))
@@ -313,7 +312,8 @@ the outcome is `NO_MATCHING_TARGETS`.
 ## Lifecycle filter
 
 Only ExecutionTargets in lifecycle **`active`** with `enabled=True`, on an
-`enabled=True` Cluster, are eligible for scheduling.
+`enabled=True` Cluster, are eligible for scheduling. `degraded` passes
+`LifecycleFilter` so `HealthFilter` can deny it with `HEALTH`.
 
 | Lifecycle | Eligible? | Notes |
 |---|---|---|
@@ -321,14 +321,14 @@ Only ExecutionTargets in lifecycle **`active`** with `enabled=True`, on an
 | `registering` | no | not ready |
 | `validating` | no | ExecutionTarget stand-in state |
 | `bootstrapping` | no | ExecutionTarget stand-in state |
-| `degraded` | no | excluded now so R10 holds without a Resource Monitor |
+| `degraded` | no | `HealthFilter` denies with `HEALTH` |
 | `failed` | no | |
 | `deregistering` | no | drain; Reconciler must stop selecting the target |
 | `deregistered` | no | |
 | `enabled=False` | no | administrative disable (Cluster or ExecutionTarget) |
 
-When AAP-92724 lands, a health filter may refine `degraded` (for example
-allow it with reduced capacity). Until then, degraded is ineligible.
+Do not allow `degraded` at reduced capacity. There is no reduced-capacity
+number on Kubernetes.
 
 ## Multiple matches
 
@@ -345,10 +345,10 @@ belong to the Work Scheduler (AAP-92722) or later Resource Monitor data
 Callers must treat `available_targets` as a set. List order in the result
 is unspecified.
 
-A future health filter (AAP-92724) may mark an ExecutionTarget
-`IneligibilityReason.CAPACITY_EXHAUSTED`. That reason is not produced in
-MVP (no capacity signal). Capacity exhaustion must not fail the work item;
-the scheduler keeps it queued.
+`HealthFilter` produces `IneligibilityReason.HEALTH` for `degraded` targets.
+`CAPACITY_EXHAUSTED` is still reserved: this slice does not emit a capacity
+signal. Capacity exhaustion must not fail the work item; the scheduler
+keeps it queued.
 
 ## Structured result
 
@@ -365,8 +365,8 @@ class IneligibilityReason(StrEnum):
     LIFECYCLE = "lifecycle"
     DISABLED = "disabled"
     SELECTOR_MISMATCH = "selector_mismatch"
-    CAPACITY_EXHAUSTED = "capacity_exhausted"  # reserved for AAP-92724
-    HEALTH = "health"                         # reserved for AAP-92724
+    CAPACITY_EXHAUSTED = "capacity_exhausted"  # reserved; no trusted capacity signal yet
+    HEALTH = "health"                         # produced when the target is degraded
     POLICY = "policy"                         # reserved for AAP-92726
 
 class IneligibleTarget:
@@ -397,17 +397,17 @@ does not use.
 | Outcome | Meaning | Scheduler action |
 |---|---|---|
 | `MATCHED` | At least one ExecutionTarget is eligible now | Choose any available target; retry others on claim/provision failure |
-| `NO_MATCHING_TARGETS` | No ExecutionTarget is eligible now | If any ineligible reason is `CAPACITY_EXHAUSTED`, keep the work queued (scaling may help). Otherwise fail; scaling will not help. |
+| `NO_MATCHING_TARGETS` | No ExecutionTarget is eligible now | If any ineligible reason is `HEALTH` or `CAPACITY_EXHAUSTED`, keep the work queued. Otherwise fail; scaling will not help. |
 
 ### Ineligibility reasons
 
 | `IneligibilityReason` | Meaning |
 |---|---|
-| `LIFECYCLE` | ExecutionTarget is not `active` |
+| `LIFECYCLE` | ExecutionTarget is not `active` or `degraded` |
 | `DISABLED` | Cluster or ExecutionTarget is administratively disabled |
 | `SELECTOR_MISMATCH` | Requested selectors are not a subset of ExecutionTarget labels (after Cluster affinity is applied) |
-| `CAPACITY_EXHAUSTED` | Labels match but the target has no spare capacity. Reserved for Resource Monitor (AAP-92724). Scheduler must re-queue, not fail. |
-| `HEALTH` | Reserved for Resource Monitor (AAP-92724) |
+| `CAPACITY_EXHAUSTED` | Labels match but the target has no spare capacity. Reserved until a trusted capacity signal exists. Scheduler must re-queue, not fail. |
+| `HEALTH` | ExecutionTarget is `degraded` (API unreachable, missing namespace, or authorization failure). Scheduler should re-queue with backoff. |
 | `POLICY` | Reserved for Isolation Policy (AAP-92726) |
 
 ### Error propagation
@@ -446,7 +446,7 @@ Built-in chain, in order:
 |---|---|---|---|
 | 1 | `LifecycleFilter` | implemented | — |
 | 2 | `SelectorFilter` | implemented; skipped on the default-routing path | — |
-| 3 | `HealthFilter` | no-op pass-through | AAP-92724 |
+| 3 | `HealthFilter` | denies `degraded` with `HEALTH` | — |
 | 4 | `PolicyFilter` | no-op pass-through | AAP-92726 |
 
 A denying filter (ineligible) stops further evaluation of that
@@ -566,7 +566,7 @@ backend/execution-plane/src/execution_plane/execution_target_reconciler/
   protocols.py      # ClusterService, ExecutionTargetService, EligibilityFilter
   exceptions.py
   matching.py       # exact-AND selector match
-  filters.py        # Lifecycle, Selector, no-op Health/Policy
+  filters.py        # Lifecycle, Selector, Health, no-op Policy
   reconciler.py
   placement.py      # PlacementResolver + WorkerManagerRegistry
   adapters.py       # implicit single-Cluster adapter until AAP-92716
@@ -586,7 +586,7 @@ do not re-export from `__init__.py`.
   (AAP-92716)
 - New REST endpoints or OpenAPI changes
 - `WorkItem.selectors` column (Work Executor / Work Store)
-- Real Resource Monitor probes or Isolation Policy DSL
+- Isolation Policy DSL (AAP-92726). Health probes live in [resource-monitor.md](resource-monitor.md).
 - Changing `WorkerManager.dispatch` beyond documenting target context for
   later stories
 
@@ -613,5 +613,5 @@ do not re-export from `__init__.py`.
   `CAPACITY_EXHAUSTED`; otherwise fail. Volume-workspace reuse that
   misses selectors on the pinned target is the same outcome; the
   error explains that the volume pin is the constraint.
-- **AAP-92724 / AAP-92726:** replace the no-op health and policy filters
-  without changing `ExecutionTargetReconciler.resolve`.
+- **AAP-92724 / AAP-92726:** `HealthFilter` denies `degraded`. Replace the
+  no-op policy filter without changing `ExecutionTargetReconciler.resolve`.

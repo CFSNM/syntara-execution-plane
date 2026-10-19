@@ -448,6 +448,76 @@ async def test_update_preserves_explicit_empty_placement_fields() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_health_transitions_active_and_degraded() -> None:
+    target = _target()
+    store = _store(_Session(result=_Result(target)))
+    actor = uuid.uuid4()
+
+    degraded = await store.record_health(
+        target.id,
+        healthy=False,
+        message="Namespace ao-execution does not exist",
+        updated_by=actor,
+    )
+    assert degraded.status is TargetStatus.DEGRADED
+    assert degraded.status_message == "Namespace ao-execution does not exist"
+    assert degraded.enabled is True
+    assert degraded.api_key == ""
+    assert target.updated_by == actor
+
+    recovered = await store.record_health(target.id, healthy=True, message="ignored", updated_by=actor)
+    assert recovered.status is TargetStatus.ACTIVE
+    assert recovered.status_message is None
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_record_health_ignores_draining_and_failed_targets() -> None:
+    draining = _target(status=TargetStatus.DRAINING)
+    draining.enabled = False
+    draining_store = _store(_Session(result=_Result(draining)))
+    ignored_draining = await draining_store.record_health(
+        draining.id,
+        healthy=False,
+        message="Kubernetes API timed out",
+        updated_by=uuid.uuid4(),
+    )
+    assert ignored_draining.status is TargetStatus.DRAINING
+    assert draining.status_message is None
+
+    failed = _target(status=TargetStatus.FAILED)
+    failed.enabled = False
+    failed_store = _store(_Session(result=_Result(failed)))
+    ignored_failed = await failed_store.record_health(
+        failed.id,
+        healthy=True,
+        message=None,
+        updated_by=uuid.uuid4(),
+    )
+    assert ignored_failed.status is TargetStatus.FAILED
+    await draining_store.close()
+    await failed_store.close()
+
+
+@pytest.mark.asyncio
+async def test_record_health_rejects_missing_target_and_rolls_back_on_commit_failure() -> None:
+    missing_session = _Session()
+    missing_store = _store(missing_session)
+    with pytest.raises(ExecutionTargetNotFoundError):
+        await missing_store.record_health(uuid.uuid4(), healthy=False, message="x", updated_by=uuid.uuid4())
+    assert missing_session.rollbacks == 1
+
+    target = _target()
+    failing_session = _Session(result=_Result(target), fail_commit=True)
+    failing_store = _store(failing_session)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await failing_store.record_health(target.id, healthy=False, message="x", updated_by=uuid.uuid4())
+    assert failing_session.rollbacks == 1
+    await missing_store.close()
+    await failing_store.close()
+
+
+@pytest.mark.asyncio
 async def test_mark_failed_records_failure_and_rejects_missing_target() -> None:
     target = _target(status=TargetStatus.DRAINING)
     store = _store(_Session(result=_Result(target)))

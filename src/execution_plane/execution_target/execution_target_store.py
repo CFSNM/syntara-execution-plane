@@ -284,6 +284,32 @@ class ExecutionTargetStore(StoreBase):
                 await self._rollback(session)
                 raise
 
+    async def record_health(
+        self,
+        target_id: uuid.UUID,
+        *,
+        healthy: bool,
+        message: str | None,
+        updated_by: uuid.UUID,
+    ) -> ExecutionTarget:
+        """Persist ACTIVE ↔ DEGRADED from a health probe. Other states are left unchanged."""
+        async with self._session_context() as session:
+            try:
+                target = await session.get(ExecutionTarget, target_id, with_for_update=True)
+                if target is None:
+                    raise ExecutionTargetNotFoundError(target_id)  # noqa: TRY301
+                if target.status not in {TargetStatus.ACTIVE, TargetStatus.DEGRADED}:
+                    return self._without_secret(target)
+                target.status = TargetStatus.ACTIVE if healthy else TargetStatus.DEGRADED
+                target.status_message = None if healthy else message
+                target.updated_by = updated_by
+                target.updated_at = datetime.now(UTC)
+                await self._commit(session)
+                return self._without_secret(target)
+            except Exception:
+                await self._rollback(session)
+                raise
+
     async def mark_failed(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
         """Record an irrecoverable drain failure without exposing backend details."""
         async with self._session_context() as session:

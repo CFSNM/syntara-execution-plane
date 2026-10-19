@@ -1,4 +1,4 @@
-"""Built-in eligibility filters. Health and Policy are no-op pass-throughs until later stories."""
+"""Built-in eligibility filters. Policy is a no-op pass-through until Isolation Policy lands."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from execution_plane.execution_target_reconciler.matching import effective_labels, matches_selectors
 from execution_plane.execution_target_reconciler.types import (
     ACTIVE_LIFECYCLE,
+    DEGRADED_LIFECYCLE,
     FilterVerdict,
     IneligibilityReason,
 )
@@ -20,7 +21,10 @@ if TYPE_CHECKING:
 
 
 class LifecycleFilter:
-    """Eligible only when the ExecutionTarget is active and enabled."""
+    """Eligible when the ExecutionTarget is enabled and active or degraded.
+
+    Degraded is a health signal, not a lifecycle denial. `HealthFilter` owns it.
+    """
 
     name = "lifecycle"
 
@@ -30,11 +34,11 @@ class LifecycleFilter:
         target: ExecutionTargetSnapshot,
         requirements: WorkRequirements,
     ) -> tuple[FilterVerdict, IneligibilityReason | None]:
-        """Deny disabled or non-active targets. Cluster disable is handled by the reconciler."""
+        """Deny disabled or non-schedulable targets. Cluster disable is handled by the reconciler."""
         del cluster, requirements
         if not target.enabled:
             return FilterVerdict.INELIGIBLE, IneligibilityReason.DISABLED
-        if target.lifecycle != ACTIVE_LIFECYCLE:
+        if target.lifecycle not in {ACTIVE_LIFECYCLE, DEGRADED_LIFECYCLE}:
             return FilterVerdict.INELIGIBLE, IneligibilityReason.LIFECYCLE
         return FilterVerdict.ELIGIBLE, None
 
@@ -58,7 +62,7 @@ class SelectorFilter:
 
 
 class HealthFilter:
-    """Reserved for the Resource Monitor (AAP-92724). Pass-through in MVP."""
+    """Deny degraded targets with HEALTH so the scheduler can re-queue them."""
 
     name = "health"
 
@@ -68,8 +72,10 @@ class HealthFilter:
         target: ExecutionTargetSnapshot,
         requirements: WorkRequirements,
     ) -> tuple[FilterVerdict, IneligibilityReason | None]:
-        """Return eligible until health signals exist."""
-        del cluster, target, requirements
+        """Exclude degraded targets; active targets remain eligible."""
+        del cluster, requirements
+        if target.lifecycle == DEGRADED_LIFECYCLE:
+            return FilterVerdict.INELIGIBLE, IneligibilityReason.HEALTH
         return FilterVerdict.ELIGIBLE, None
 
 
@@ -90,5 +96,5 @@ class PolicyFilter:
 
 
 def default_filters() -> tuple[LifecycleFilter, SelectorFilter, HealthFilter, PolicyFilter]:
-    """Built-in chain: lifecycle, selector, then no-op health and policy."""
+    """Built-in chain: lifecycle, selector, health, then no-op policy."""
     return (LifecycleFilter(), SelectorFilter(), HealthFilter(), PolicyFilter())

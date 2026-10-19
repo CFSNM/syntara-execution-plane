@@ -132,6 +132,7 @@ class _Store:
         self.get_kwargs: list[dict[str, object]] = []
         self.marked_failed = False
         self.finalized = False
+        self.health: dict[str, object] = {}
 
     async def create(self, *_: object, **kwargs: object) -> ExecutionTarget:
         self.created = kwargs
@@ -153,6 +154,10 @@ class _Store:
 
     async def mark_failed(self, _target_id: uuid.UUID, _updated_by: uuid.UUID) -> ExecutionTarget:
         self.marked_failed = True
+        return self.target
+
+    async def record_health(self, _target_id: uuid.UUID, **kwargs: object) -> ExecutionTarget:
+        self.health = kwargs
         return self.target
 
     async def activate(self, _target_id: uuid.UUID, _updated_by: uuid.UUID) -> ExecutionTarget:
@@ -473,6 +478,17 @@ async def test_service_delegates_drain_failure_and_finalization() -> None:
 
     assert store.marked_failed is True
     assert store.finalized is True
+
+
+@pytest.mark.asyncio
+async def test_service_delegates_health_recording() -> None:
+    target = _target(status=TargetStatus.ACTIVE)
+    store = _Store(target)
+    service = ExecutionTargetService(store)  # type: ignore[arg-type]
+    actor_id = uuid.uuid4()
+
+    assert await service.record_health(target.id, healthy=False, message="unreachable", updated_by=actor_id) is target
+    assert store.health == {"healthy": False, "message": "unreachable", "updated_by": actor_id}
 
 
 @pytest.mark.asyncio

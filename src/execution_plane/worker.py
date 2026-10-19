@@ -25,6 +25,7 @@ from execution_plane.execution_target_reconciler.exceptions import UnknownBacken
 from execution_plane.execution_target_reconciler.placement import WorkerManagerRegistry
 from execution_plane.models.execution_target import BackendType
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
+from execution_plane.resource_monitor.monitor import ResourceMonitor
 from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane.worker_manager.vanilla_k8s.manager import (
@@ -245,11 +246,13 @@ async def run_worker(database_url: str) -> None:
         workload_manager = VanillaK8sWorkerManager(target_service, cluster_service, work_service, settings)
         worker_managers.register(BackendType.VANILLA_K8S, workload_manager)
         drain_monitor = DrainMonitor(target_service, cluster_service, work_service)
+        resource_monitor = ResourceMonitor(target_service, cluster_service, settings)
         logger.debug(
             "ExecutionTarget reconciler constructed",
             resolver=type(placement_resolver).__name__,
         )
         await drain_monitor.start()
+        await resource_monitor.start()
         try:
             wakeup_event = asyncio.Event()
             async with asyncio.TaskGroup() as tg:
@@ -268,6 +271,7 @@ async def run_worker(database_url: str) -> None:
                     name="ep-k8s-policy-reconciler",
                 )
         finally:
+            await resource_monitor.stop()
             await drain_monitor.stop()
             await event_delivery.close()
 

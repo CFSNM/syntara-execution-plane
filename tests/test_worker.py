@@ -30,9 +30,9 @@ class _StoreContext:
 class _DrainMonitor:
     def __init__(
         self,
-        _target_store: object,
+        _target_service: object,
         _cluster_service: object,
-        _work_item_store: object,
+        _work_service: object,
         events: list[str],
     ) -> None:
         self.events = events
@@ -42,6 +42,19 @@ class _DrainMonitor:
 
     async def stop(self) -> None:
         self.events.append("monitor:stop")
+
+
+class _ResourceMonitor:
+    def __init__(
+        self, _target_service: object, _cluster_service: object, _settings: object, events: list[str]
+    ) -> None:
+        self.events = events
+
+    async def start(self) -> None:
+        self.events.append("resource-monitor:start")
+
+    async def stop(self) -> None:
+        self.events.append("resource-monitor:stop")
 
 
 class _CompletionDelivery:
@@ -86,6 +99,11 @@ async def test_run_worker_wires_placement_resolver_to_the_poll_loop(monkeypatch:
         worker,
         "DrainMonitor",
         lambda target, cluster, work: _DrainMonitor(target, cluster, work, events),
+    )
+    monkeypatch.setattr(
+        worker,
+        "ResourceMonitor",
+        lambda target, cluster, settings: _ResourceMonitor(target, cluster, settings, events),
     )
     monkeypatch.setattr(worker, "CompletionNotifier", lambda _settings: _CompletionDelivery(SimpleNamespace(), events))
     monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args: workload_manager)
@@ -136,6 +154,11 @@ async def test_run_worker_owns_drain_monitor_for_the_worker_lifetime(monkeypatch
         "DrainMonitor",
         lambda target, cluster, work: _DrainMonitor(target, cluster, work, events),
     )
+    monkeypatch.setattr(
+        worker,
+        "ResourceMonitor",
+        lambda target, cluster, settings: _ResourceMonitor(target, cluster, settings, events),
+    )
     monkeypatch.setattr(worker, "CompletionNotifier", lambda settings: _CompletionDelivery(settings, events))
     monkeypatch.setattr(worker, "VanillaK8sWorkerManager", lambda *_args: object())
     monkeypatch.setattr(worker, "build_placement_resolver", lambda *_args: object())
@@ -147,6 +170,8 @@ async def test_run_worker_owns_drain_monitor_for_the_worker_lifetime(monkeypatch
     await worker.run_worker("postgresql+asyncpg://localhost/syntara")
 
     assert events.index("monitor:start") < events.index("monitor:stop")
+    assert events.index("resource-monitor:start") < events.index("resource-monitor:stop")
+    assert events.index("resource-monitor:stop") < events.index("work:stop")
     assert events.index("monitor:stop") < events.index("work:stop")
 
 

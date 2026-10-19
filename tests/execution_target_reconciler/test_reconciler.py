@@ -173,6 +173,37 @@ async def test_non_active_and_disabled_targets_are_ineligible(
 
 
 @pytest.mark.asyncio
+async def test_degraded_targets_are_ineligible_for_health(
+    make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
+) -> None:
+    cluster = make_cluster()
+    degraded = make_target(cluster, name="degraded", lifecycle="degraded")
+    active = make_target(cluster, name="active", is_default=True)
+    resolver = make_reconciler([degraded, active])
+
+    result = await resolver.resolve(WorkRequirements())
+
+    assert _names(result) == {"active"}
+    reasons = {item.target.name: item.reason for item in result.ineligible_targets}
+    assert reasons["degraded"] is IneligibilityReason.HEALTH
+
+
+@pytest.mark.asyncio
+async def test_only_degraded_default_is_no_matching_targets_with_health(
+    make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
+) -> None:
+    cluster = make_cluster()
+    degraded = make_target(cluster, name="ep-default", lifecycle="degraded", is_default=True)
+    resolver = make_reconciler([degraded])
+
+    result = await resolver.resolve(WorkRequirements())
+
+    assert result.outcome is ResolveOutcome.NO_MATCHING_TARGETS
+    assert result.available_targets == []
+    assert result.ineligible_targets[0].reason is IneligibilityReason.HEALTH
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_denial_stops_selector_evaluation(make_cluster: MakeCluster, make_target: MakeTarget) -> None:
     cluster = make_cluster()
     target = make_target(cluster, lifecycle="failed")

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
 ACTIVE_LIFECYCLE = "active"
+DEGRADED_LIFECYCLE = "degraded"
 
 
 class ResolveOutcome(StrEnum):

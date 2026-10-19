@@ -55,6 +55,26 @@ class EPSettings(BaseSettings):
         validation_alias="EP_CREDENTIAL_ENCRYPTION_KEY_PATH",
     )
     dispatch_retry_backoff_seconds: float = Field(default=5.0, validation_alias="EP_DISPATCH_RETRY_BACKOFF_SECONDS")
+    resource_monitor_interval_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        validation_alias="EP_RESOURCE_MONITOR_INTERVAL_SECONDS",
+    )
+    resource_monitor_probe_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0.0,
+        validation_alias="EP_RESOURCE_MONITOR_PROBE_TIMEOUT_SECONDS",
+    )
+    resource_monitor_failure_threshold: int = Field(
+        default=3,
+        ge=1,
+        validation_alias="EP_RESOURCE_MONITOR_FAILURE_THRESHOLD",
+    )
+    resource_monitor_success_threshold: int = Field(
+        default=2,
+        ge=1,
+        validation_alias="EP_RESOURCE_MONITOR_SUCCESS_THRESHOLD",
+    )
     completion_callback_url: str | None = Field(default=None, validation_alias="EP_COMPLETION_CALLBACK_URL")
     completion_callback_ca_cert_path: str | None = Field(default=None, validation_alias="EP_CALLBACK_CA_CERT_PATH")
     completion_callback_cert_path: str | None = Field(default=None, validation_alias="EP_CALLBACK_CERT_PATH")
@@ -68,6 +88,14 @@ class EPSettings(BaseSettings):
         default_factory=list,
         validation_alias="EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS",
     )
+
+    @model_validator(mode="after")
+    def validate_resource_monitor_timeout(self) -> EPSettings:
+        """Keep each probe shorter than the scan interval so scans cannot overlap on a timeout."""
+        if self.resource_monitor_probe_timeout_seconds >= self.resource_monitor_interval_seconds:
+            msg = "EP_RESOURCE_MONITOR_PROBE_TIMEOUT_SECONDS must be shorter than EP_RESOURCE_MONITOR_INTERVAL_SECONDS"
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def validate_workload_network_ranges(self) -> EPSettings:

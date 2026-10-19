@@ -133,6 +133,22 @@ class ExecutionTargetService:
             placement=placement,
         )
 
+    async def record_health(
+        self,
+        target_id: uuid.UUID,
+        *,
+        healthy: bool,
+        message: str | None,
+        updated_by: uuid.UUID,
+    ) -> ExecutionTarget:
+        """Persist ACTIVE ↔ DEGRADED from a health probe."""
+        return await self._store.record_health(
+            target_id,
+            healthy=healthy,
+            message=message,
+            updated_by=updated_by,
+        )
+
     async def mark_failed(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
         """Record an irrecoverable target drain failure."""
         return await self._store.mark_failed(target_id, updated_by)

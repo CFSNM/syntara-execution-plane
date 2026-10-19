@@ -164,14 +164,14 @@ the Drain Monitor from `run_worker()`. Cancellation in `finally` matches the
 drain monitor. Target drain semantics are in
 [cluster-and-target-services.md](cluster-and-target-services.md).
 
-Suggested layout:
+Layout:
 
 ```
-backend/execution-plane/src/execution_plane/resource_monitor/
+src/execution_plane/resource_monitor/
   monitor.py      # loop, hysteresis, persist
   probes.py       # TargetProbe protocol, KubernetesNamespaceProbe, SkipProbe
   client.py       # Kubernetes API client from Cluster.endpoint + api_key
-backend/execution-plane/tests/resource_monitor/
+tests/resource_monitor/
 ```
 
 ### Probe protocol
@@ -193,36 +193,34 @@ result that the monitor treats as “do not update.”
 
 ### Kubernetes client
 
-Cluster `api_key` is already stored in two shapes:
+Cluster `api_key` is a Bearer token (OpenShift `oc whoami --show-token`, or a
+Kind service-account token minted by the EP dev CLI). Local Kind tooling may
+read a kubeconfig to extract that token and CA, but it does not persist the
+kubeconfig blob.
 
-- Bearer token (OpenShift `oc whoami --show-token` via the EP dev CLI).
-- Kubeconfig blob (local Kind / minikube via the EP dev CLI).
-
-The client factory must accept both. Add `kubernetes` (or `kubernetes_asyncio`)
-to execution-plane dependencies. Keep the probe behind the protocol so unit
-tests never talk to a cluster.
+Add `kubernetes` (or `kubernetes_asyncio`) to execution-plane dependencies.
+Keep the probe behind the protocol so unit tests never talk to a cluster.
 
 This client factory is intentionally shared: the vanilla Kubernetes Worker
 Manager will need the same construction from Cluster credentials. Do not bury
 it inside the probe as a private helper that the Worker Manager cannot import.
 
-`ClusterStore.get()` currently redacts `api_key`. The monitor loop needs
-`include_secret=True` (same pattern as `ExecutionTargetStore.get`).
+`ClusterService.get()` currently redacts `api_key`. The monitor loop needs
+`include_secret=True` (same pattern as `ExecutionTargetService.get`).
 
 #### TLS
 
 - Use the system CA bundle by default.
-- If the credential is a kubeconfig, use its certificate-authority data.
-- Do not default to `insecure-skip-tls-verify`. An explicit setting for local
-  Kind is acceptable if required.
+- If the Cluster stores a CA PEM (`ca_certificate`), use that.
+- Do not default to `insecure-skip-tls-verify`.
 
 ### Persistence
 
 Reuse `TargetStatus.DEGRADED` / `ACTIVE` and `status_message`. Do not add
 capacity columns.
 
-Add a store method, for example
-`record_health(target_id, *, healthy, message, updated_by)`:
+Add `ExecutionTargetService.record_health(target_id, *, healthy, message, updated_by)`
+that delegates to the store:
 
 - Only transition `ACTIVE ↔ DEGRADED`.
 - Refuse to overwrite `DRAINING`, `FAILED`, or registration states.
@@ -253,8 +251,7 @@ path. See [cluster-and-target-services.md](cluster-and-target-services.md).
 Filter order stays lifecycle → selector → health → policy.
 `ExecutionTargetReconciler.resolve()` does not change.
 
-Today `LifecycleFilter` treats `degraded` as `LIFECYCLE`, so `HealthFilter`
-never runs. Change that so health owns degraded:
+`LifecycleFilter` lets `degraded` through so `HealthFilter` owns it:
 
 | Lifecycle | `LifecycleFilter` | `HealthFilter` |
 |---|---|---|
@@ -286,8 +283,8 @@ Until AAP-92722 lands, producing `HEALTH` is still the correct filter contract.
 ## Implementation order
 
 1. This document (the contract reviewers hold the code to).
-2. Store: `include_secret` on Cluster reads used by the monitor; `record_health`
-   with the transition guards.
+2. Store + Service: `include_secret` on Cluster reads used by the monitor;
+   `record_health` with the transition guards, exposed on `ExecutionTargetService`.
 3. Kubernetes client factory + namespace probe. Unit tests with a fake client:
    success, 404 namespace, 401/403, timeout, skip `local://` and RHEL.
 4. Monitor loop + hysteresis, started from `worker.py`.
@@ -328,4 +325,4 @@ Unit tests are the bar. Do not require Kind or OpenShift in CI for this story.
 - **[AAP-92722](https://redhat.atlassian.net/browse/AAP-92722) Work Scheduler:** on `NO_MATCHING_TARGETS`, re-queue when any reason is `HEALTH` or `CAPACITY_EXHAUSTED`; fail on selector/lifecycle misses. `CAPACITY_EXHAUSTED` is reserved until a trusted capacity signal exists.
 - **[AAP-93615](https://redhat.atlassian.net/browse/AAP-93615) vanilla Kubernetes Worker Manager:** reuse the Kubernetes client factory; own reactive placement rejection. Do not duplicate bounce-back in the Resource Monitor.
 - **[labels.md](labels.md):** live health is not a label. Do not encode reachability as `healthy=true`.
-- **Local development:** [kubernetes-local-development.md](kubernetes-local-development.md) registers a real kubeconfig-backed Cluster. That path is what the namespace probe exercises. The `local://` bootstrap Cluster is skipped on purpose.
+- **Local development:** [kubernetes-local-development.md](kubernetes-local-development.md) registers a real HTTP Cluster with a Bearer token and CA. That path is what the namespace probe exercises. The `local://` bootstrap Cluster is skipped on purpose.
