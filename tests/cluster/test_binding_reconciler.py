@@ -47,11 +47,12 @@ def _cluster() -> Cluster:
 @pytest.mark.asyncio
 async def test_new_binding_namespace_becomes_typed_kubernetes_placement() -> None:
     cluster = _cluster()
-    cluster_service = AsyncMock()
-    cluster_service.update_source_binding.return_value = cluster
-    reconciler = ClusterBindingReconciler(AsyncMock(), cluster_service)
+    cluster_store = AsyncMock()
+    cluster_store.update_source_binding.return_value = cluster
+    cluster_registrar = AsyncMock()
+    reconciler = ClusterBindingReconciler(AsyncMock(), cluster_registrar, cluster_store)
     provision = AsyncMock(return_value=cluster)
-    reconciler._service.provision = provision
+    reconciler._registrar.provision = provision
 
     status, cluster_id = await reconciler._reconcile_upsert(_binding(), None)
 
@@ -67,11 +68,12 @@ async def test_binding_update_keeps_namespace_in_request_and_sends_typed_placeme
     binding = _binding()
     binding.labels = {"region": "eu-west"}
     cluster = _cluster()
-    cluster_service = AsyncMock()
-    cluster_service.update_source_binding.return_value = cluster
-    reconciler = ClusterBindingReconciler(AsyncMock(), cluster_service)
+    cluster_store = AsyncMock()
+    cluster_store.update_source_binding.return_value = cluster
+    cluster_registrar = AsyncMock()
+    reconciler = ClusterBindingReconciler(AsyncMock(), cluster_registrar, cluster_store)
     sync_update = AsyncMock()
-    reconciler._service.sync_update = sync_update
+    reconciler._registrar.sync_update = sync_update
 
     status, cluster_id = await reconciler._reconcile_upsert(binding, cluster)
 

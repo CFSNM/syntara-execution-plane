@@ -8,16 +8,14 @@ from typing import TYPE_CHECKING, Self, cast
 
 import pytest
 
-from execution_plane.cluster.cluster_service import ClusterService, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
-from execution_plane.execution_target.execution_target_service import ExecutionTargetService
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.execution_target_reconciler.adapters import (
     ExecutionTargetSnapshotSourceAdapter,
     build_placement_resolver,
     cluster_snapshot_from_model,
     execution_target_snapshot_from_model,
-    service_backed_snapshot_source,
+    store_backed_snapshot_source,
 )
 from execution_plane.execution_target_reconciler.placement import PlacementResolver
 from execution_plane.execution_target_reconciler.protocols import ExecutionTargetSnapshotSource
@@ -98,17 +96,12 @@ class _Session:
         return self._result
 
 
-def _cluster_service(clusters: list[Cluster]) -> ClusterService:
-    store = ClusterStore.from_session(cast("AsyncSession", _Session(clusters)))
-    return ClusterService(
-        store,
-        ExecutionTargetService(ExecutionTargetStore.from_session(cast("AsyncSession", _Session([])))),
-        NoopDiscoveryMechanism(),
-    )
+def _cluster_store(clusters: list[Cluster]) -> ClusterStore:
+    return ClusterStore.from_session(cast("AsyncSession", _Session(clusters)))
 
 
-def _target_service(targets: list[ExecutionTarget]) -> ExecutionTargetService:
-    return ExecutionTargetService(ExecutionTargetStore.from_session(cast("AsyncSession", _Session(targets))))
+def _target_store(targets: list[ExecutionTarget]) -> ExecutionTargetStore:
+    return ExecutionTargetStore.from_session(cast("AsyncSession", _Session(targets)))
 
 
 def test_cluster_snapshot_maps_non_active_to_disabled() -> None:
@@ -139,11 +132,11 @@ def test_snapshot_source_adapter_inherits_snapshot_source_protocol() -> None:
 
 
 @pytest.mark.asyncio
-async def test_service_backed_snapshot_source_interns_cluster_snapshots() -> None:
+async def test_store_backed_snapshot_source_interns_cluster_snapshots() -> None:
     cluster = _cluster()
     first = _target(cluster)
     second = _target(cluster, name="ep-gpu", is_default=False)
-    source = service_backed_snapshot_source(_cluster_service([cluster]), _target_service([first, second]))
+    source = store_backed_snapshot_source(_cluster_store([cluster]), _target_store([first, second]))
 
     listed = await source.list()
 
@@ -155,10 +148,10 @@ async def test_service_backed_snapshot_source_interns_cluster_snapshots() -> Non
 
 
 @pytest.mark.asyncio
-async def test_service_backed_snapshot_source_omits_targets_without_a_cluster() -> None:
+async def test_store_backed_snapshot_source_omits_targets_without_a_cluster() -> None:
     cluster = _cluster()
     orphan = _target(_cluster())
-    source = service_backed_snapshot_source(_cluster_service([cluster]), _target_service([orphan]))
+    source = store_backed_snapshot_source(_cluster_store([cluster]), _target_store([orphan]))
 
     assert await source.list() == ()
 
@@ -166,7 +159,7 @@ async def test_service_backed_snapshot_source_omits_targets_without_a_cluster() 
 @pytest.mark.asyncio
 async def test_build_placement_resolver_returns_placement_facade() -> None:
     cluster = _cluster()
-    resolver = build_placement_resolver(_cluster_service([cluster]), _target_service([_target(cluster)]))
+    resolver = build_placement_resolver(_cluster_store([cluster]), _target_store([_target(cluster)]))
     assert isinstance(resolver, PlacementResolver)
     result = await resolver.resolve(WorkRequirements())
     assert result.available_targets[0].name == "ep-default"

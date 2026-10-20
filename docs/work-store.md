@@ -1,41 +1,35 @@
-# Execution Plane: Work Store and Service
+# Execution Plane: Work Store and Scheduler
 
-`WorkStore` is the internal persistence boundary for `WorkItem` and
-`CompletionEvent` records. `WorkItemService` is the domain-facing boundary used
-by command handlers, the worker, Worker Managers, the Completion Notifier, and
-the drain monitor.
+`WorkStore` is the concrete persistence API for `WorkItem` records and their
+existing completion outbox. Consumers depend directly on `WorkStore`.
+`WorkScheduler` coordinates claiming work and resolving its placement.
 
 **Sources:** `src/execution_plane/work_item/work_item_store.py`,
-`src/execution_plane/work_item/work_item_service.py`,
+`src/execution_plane/work_item/work_scheduler.py`,
+`src/execution_plane/work_item/policy.py`, and
 `src/execution_plane/models/work_item.py`
 
-## Boundary
+## Responsibilities
 
-| Layer | Responsibility |
+| Class | Responsibility |
 |---|---|
-| `WorkItemService` | Public Work use cases, client-scoped reads, placement orchestration, terminal-result policy, retry validation, and claim ownership checks |
-| `WorkStore` | SQLAlchemy sessions and engines, row locks, commits and rollbacks, queue selection, atomic state transitions, and transactional completion-outbox writes |
+| `WorkStore` | Work commands, client-scoped reads, lifecycle transitions, completion delivery state, and target-drain checks |
+| `WorkScheduler` | Claims queued Work, resolves placement, revalidates candidates, and assigns or releases the claim |
 
-Domain operations flow only through `WorkItemService`. Composition roots
-construct `WorkStore` with `from_engine` or `from_database_url` and inject that
-Store into the Service; the Store's other methods are internal persistence
-transitions exercised directly only by Store tests.
+Command handlers and REST resource queries construct `WorkStore` directly.
+The worker constructs one `WorkStore` and shares it with the scheduler, worker
+managers, Completion Notifier, and drain monitor. Each method signature is
+defined on the concrete store, without separate consumer-specific interfaces.
+Completion-event persistence stays in `WorkStore`; there is no separate
+completion store.
 
-## Service contract
+## Scheduling and execution
 
-`WorkItemService` exposes:
-
-- `dispatch`, `get`, `list_for_client`, and `request_cancel` for command and query flows.
-- `reserve_one` and `place_reserved_item` for worker scheduling.
-- `mark_dispatched`, `refresh_claim`, `update_backend_resource`, `set_result`,
-  `mark_reconciliation_required`, and `requeue_pre_execute_failure` for execution.
-- `get_pending_completion_events` and `record_completion_event_attempt` for durable completion delivery.
-- `is_target_drained` for target and Cluster drain finalization.
-
-The Service validates terminal result statuses and non-negative completion retry
-delays. It resolves Work requirements, revalidates candidate targets, fails a
-reserved item when no target matches, and releases the reservation when every
-candidate becomes ineligible.
+`WorkScheduler.claim_and_place_work()` combines reservation, placement,
+no-match failure, candidate revalidation, assignment, and claim release.
+`WorkStore` enforces terminal-result status policy, bounded uncertain-outcome
+explanations, claim fencing, and non-negative completion retry delays.
+`WorkStore.is_target_drained` is the predicate used by `DrainMonitor`.
 
 ## Persistence invariants
 
@@ -48,5 +42,7 @@ candidate becomes ineligible.
 - Terminal results and their `CompletionEvent` outbox rows are committed together.
 - Lease-expired uncertain work is moved to `RECONCILIATION_REQUIRED` with a durable event.
 
-The Store does not accept SQLAlchemy sessions from callers and does not expose
-generic entity mutation. Every method represents an allowed persistence transition.
+The Store does not expose generic entity mutation. Every method represents an
+allowed persistence transition.
+`ExecutionTargetStore.finalize_delete` atomically rechecks active work and
+detaches historical work while deleting a drained target.

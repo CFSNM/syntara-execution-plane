@@ -69,10 +69,10 @@ async def test_completion_is_a_stable_command_rebuilt_from_domain_event():
         created_at=datetime.now(UTC),
         next_attempt_at=datetime.now(UTC),
     )
-    store = AsyncMock()
+    service = AsyncMock()
     try:
-        await delivery._deliver_one(store, event)
-        await delivery._deliver_one(store, event)
+        await delivery._deliver_one(service, event)
+        await delivery._deliver_one(service, event)
     finally:
         await delivery.close()
     assert len(bodies) == 2
@@ -109,9 +109,9 @@ async def test_wrong_completion_receipt_is_retried():
         created_at=datetime.now(UTC),
         next_attempt_at=datetime.now(UTC),
     )
-    store = AsyncMock()
+    service = AsyncMock()
     try:
-        await delivery._deliver_one(store, event)
+        await delivery._deliver_one(service, event)
     finally:
         await delivery.close()
-    assert store.record_completion_event_attempt.call_args.kwargs["delivered"] is False
+    assert service.record_completion_event_attempt.call_args.kwargs["delivered"] is False

@@ -30,9 +30,9 @@ class _StoreContext:
 class _DrainMonitor:
     def __init__(
         self,
-        _target_service: object,
-        _cluster_service: object,
-        _work_service: object,
+        _target_store: object,
+        _cluster_store: object,
+        _work_item_store: object,
         events: list[str],
     ) -> None:
         self.events = events
@@ -45,7 +45,7 @@ class _DrainMonitor:
 
 
 class _ResourceMonitor:
-    def __init__(self, _target_service: object, _cluster_service: object, _settings: object, events: list[str]) -> None:
+    def __init__(self, _target_store: object, _cluster_store: object, _settings: object, events: list[str]) -> None:
         self.events = events
 
     async def start(self) -> None:
@@ -74,8 +74,6 @@ async def test_run_worker_wires_placement_resolver_to_the_poll_loop(monkeypatch:
     work_service = _StoreContext("work", events)
     cluster_store = _StoreContext("cluster", events)
     target_store = _StoreContext("target", events)
-    cluster_service = object()
-    target_service = object()
     workload_manager = object()
     placement_resolver = object()
     built_with: list[tuple[object, object, WorkerManagerRegistry]] = []
@@ -91,8 +89,6 @@ async def test_run_worker_wires_placement_resolver_to_the_poll_loop(monkeypatch:
         "execution_plane.worker.ExecutionTargetStore.from_database_url",
         lambda _url: target_store,
     )
-    monkeypatch.setattr(worker, "ClusterService", lambda *_args: cluster_service)
-    monkeypatch.setattr(worker, "ExecutionTargetService", lambda _store: target_service)
     monkeypatch.setattr(
         worker,
         "DrainMonitor",
@@ -111,7 +107,8 @@ async def test_run_worker_wires_placement_resolver_to_the_poll_loop(monkeypatch:
         return placement_resolver
 
     async def record_poller(
-        _store: object,
+        _scheduler: object,
+        _progress: object,
         _target_store: object,
         managers: WorkerManagerRegistry,
         _settings: object,
@@ -127,7 +124,7 @@ async def test_run_worker_wires_placement_resolver_to_the_poll_loop(monkeypatch:
 
     await worker.run_worker("postgresql+asyncpg://localhost/syntara")
 
-    assert built_with == [(cluster_service, target_service, poll_calls[0])]
+    assert built_with == [(cluster_store, target_store, poll_calls[0])]
     assert poll_calls[0].get(BackendType.VANILLA_K8S) is workload_manager
 
 

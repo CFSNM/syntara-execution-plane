@@ -68,14 +68,14 @@ graph LR
 
 - **[Work Executor](work-executor.md)**
   - In: work submission from consumer, including a caller-generated UUID and isolation policy
-  - Out: `WorkItem` persisted through [`WorkItemService`](work-store.md). The ID is caller-owned — the consumer generates it before submitting.
+  - Out: `WorkItem` persisted through the [`Work boundary`](work-store.md). The ID is caller-owned — the consumer generates it before submitting.
 
 - **[Work Store](work-store.md)**
   - In: `WorkItem`s from Work Executor; results and completion events from Worker Manager
   - Out: claimable `WorkItem`s to Work Scheduler; completion events to Completion Notifier
 
 - **Work Scheduler**
-  - In: claimed `WorkItem` from [`WorkItemService`](work-store.md); ranked `ExecutionTarget`s (`ReconcileResult`) from `ExecutionTarget` Reconciler
+  - In: claimed `WorkItem` from the [`Work boundary`](work-store.md); ranked `ExecutionTarget`s (`ReconcileResult`) from `ExecutionTarget` Reconciler
   - Out: demand signal to Pool Autoscaler; for each candidate `ExecutionTarget` in rank order, instantiates a `WorkerManager` and calls `dispatch` — moves to the next candidate on failure, leaves `WorkItem` in `PENDING` if all fail
 
 - **ExecutionTarget Reconciler**
@@ -96,11 +96,11 @@ graph LR
 
 - **[Worker Manager](worker-manager.md)**
   - In: `WorkItem` (instantiated by Work Scheduler for a specific `ExecutionTarget`; configured at construction, not passed at dispatch time)
-  - Out: work submitted to the cluster API; placement failure recorded to [`WorkItemService`](work-store.md); bounce-back state written to `ExecutionTargetService` on infrastructure rejection. On successful start, hands off to Work Watcher.
+  - Out: work submitted to the cluster API; placement failure recorded to the [`Work boundary`](work-store.md); bounce-back state written to `ExecutionTargetStore` on infrastructure rejection. On successful start, hands off to Work Watcher.
 
 - **Work Watcher** *(placeholder — not yet designed)*
   - In: hand-off from Work Scheduler after a `WorkItem` is successfully started
-  - Out: result and completion event written to [`WorkItemService`](work-store.md), which triggers the Completion Notifier. Monitors the running job in the Worker Pool and collects output.
+  - Out: result and completion event written to the [`Work boundary`](work-store.md), which triggers the Completion Notifier. Monitors the running job in the Worker Pool and collects output.
 
 - **Credential Provider**
   - In: credential scope (from isolation policy on the `WorkItem` or the `ExecutionTarget`) + request from Worker Manager
@@ -111,7 +111,7 @@ graph LR
   - Out: execution results; health data probed by Resource Monitor. K8s backend: see [kubernetes-backend.md](kubernetes-backend.md).
 
 - **Completion Notifier**
-  - In: completion event from [`WorkItemService`](work-store.md)
+  - In: completion event from the [`Work boundary`](work-store.md)
   - Out: async notification to consumer (e.g. Temporal signal callback)
 
 - **Registration Provider**

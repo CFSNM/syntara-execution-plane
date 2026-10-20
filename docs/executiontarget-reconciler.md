@@ -204,20 +204,15 @@ class ExecutionTargetSnapshot:
     lifecycle: str          # see Lifecycle filter
     enabled: bool
 
-class ClusterService(Protocol):
-    async def list_clusters(self) -> Sequence[ClusterSnapshot]: ...
-
-class ExecutionTargetService(Protocol):
-    async def list_by_cluster(
-        self, cluster_id: uuid.UUID
-    ) -> Sequence[ExecutionTargetSnapshot]: ...
+class ExecutionTargetSnapshotSource(Protocol):
+    async def list(self) -> Sequence[ExecutionTargetSnapshot]: ...
 ```
 
-`list_clusters()` returns registered Clusters. `list_by_cluster()` returns
-that Cluster's ExecutionTargets. Every `ExecutionTargetSnapshot` carries
-its `ClusterSnapshot` (`target.cluster`). Targets of the same Cluster share
-one ClusterSnapshot instance. The reconciler applies eligibility filters
-in process; the Services are not required to pre-filter by selector.
+`list()` returns every ExecutionTarget snapshot. Every
+`ExecutionTargetSnapshot` carries its `ClusterSnapshot` (`target.cluster`).
+Targets of the same Cluster share one ClusterSnapshot instance. The reconciler
+applies eligibility filters in process; the snapshot source is not required to
+pre-filter by selector.
 
 Until AAP-92716 lands Cluster as a first-class row, an adapter may expose a
 single implicit Cluster (the local OpenShift / Kubernetes cluster) wrapping
@@ -232,8 +227,7 @@ without changing `ExecutionTargetReconciler`.
 class ExecutionTargetReconciler:
     def __init__(
         self,
-        clusters: ClusterService,
-        targets: ExecutionTargetService,
+        source: ExecutionTargetSnapshotSource,
         filters: Sequence[EligibilityFilter],
     ) -> None: ...
 
@@ -563,7 +557,7 @@ Syntara `BaseService` (this is not an HTTP domain service).
 ```
 backend/execution-plane/src/execution_plane/execution_target_reconciler/
   types.py          # WorkRequirements, ClusterSnapshot, ExecutionTargetSnapshot, ReconcileResult, ...
-  protocols.py      # ClusterService, ExecutionTargetService, EligibilityFilter
+  protocols.py      # ExecutionTargetSnapshotSource, EligibilityFilter
   exceptions.py
   matching.py       # exact-AND selector match
   filters.py        # Lifecycle, Selector, Health, no-op Policy
@@ -593,12 +587,9 @@ do not re-export from `__init__.py`.
 ## Coordination
 
 - **AAP-92716 (Pool / Cluster Service):** persist `Cluster` with a one-to-many
-  foreign key to `ExecutionTarget`. Share `ClusterService` /
-  `ClusterSnapshot` and `ExecutionTargetService` /
-  `ExecutionTargetSnapshot` field names (cluster: name, labels,
-  cluster_type, enabled; target: cluster backref, name, namespace,
-  backend_type, labels, lifecycle, enabled) so the implicit-cluster
-  adapter can be deleted when the real Services land.
+  foreign key to `ExecutionTarget`. Keep the snapshot-source adapter behind
+  `ExecutionTargetSnapshotSource` so persistence can change without changing
+  `ExecutionTargetReconciler`.
 - **AAP-92715 / AAP-92720 (Work Store / Work Executor):** if selectors are
   persisted on `WorkItem`, map them into `WorkRequirements`; do not couple
   the reconciler to the row type. AO must resolve Project / Workflow /

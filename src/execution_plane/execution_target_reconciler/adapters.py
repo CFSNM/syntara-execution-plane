@@ -14,8 +14,8 @@ from execution_plane.models.cluster import ClusterStatus
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from execution_plane.cluster.cluster_service import ClusterService
-    from execution_plane.execution_target.execution_target_service import ExecutionTargetService
+    from execution_plane.cluster.cluster_store import ClusterStore
+    from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.execution_target_reconciler.protocols import EligibilityFilter
     from execution_plane.models.cluster import Cluster
     from execution_plane.models.execution_target import ExecutionTarget
@@ -51,12 +51,12 @@ def execution_target_snapshot_from_model(
 
 
 class ExecutionTargetSnapshotSourceAdapter(ExecutionTargetSnapshotSource):
-    """`ExecutionTargetSnapshotSource` Protocol backed by Cluster and target Services."""
+    """`ExecutionTargetSnapshotSource` Protocol backed by Cluster and target stores."""
 
-    def __init__(self, cluster_service: ClusterService, target_service: ExecutionTargetService) -> None:
+    def __init__(self, cluster_queries: ClusterStore, target_snapshots: ExecutionTargetStore) -> None:
         """Load Clusters first so every target of a Cluster shares one snapshot instance."""
-        self._clusters = cluster_service
-        self._targets = target_service
+        self._clusters = cluster_queries
+        self._targets = target_snapshots
 
     async def list(self) -> Sequence[ExecutionTargetSnapshot]:
         """Return all targets with interned Cluster backrefs. Orphans with no Cluster are omitted."""
@@ -68,24 +68,24 @@ class ExecutionTargetSnapshotSourceAdapter(ExecutionTargetSnapshotSource):
         )
 
 
-def service_backed_snapshot_source(
-    cluster_service: ClusterService,
-    target_service: ExecutionTargetService,
+def store_backed_snapshot_source(
+    cluster_queries: ClusterStore,
+    target_snapshots: ExecutionTargetStore,
 ) -> ExecutionTargetSnapshotSourceAdapter:
-    """Build a flat target Service that interns ClusterSnapshot instances."""
-    return ExecutionTargetSnapshotSourceAdapter(cluster_service, target_service)
+    """Build a flat target source that interns ClusterSnapshot instances."""
+    return ExecutionTargetSnapshotSourceAdapter(cluster_queries, target_snapshots)
 
 
 def build_placement_resolver(
-    cluster_service: ClusterService,
-    target_service: ExecutionTargetService,
+    cluster_queries: ClusterStore,
+    target_snapshots: ExecutionTargetStore,
     worker_managers: WorkerManagerRegistry | None = None,
     filters: Sequence[EligibilityFilter] | None = None,
 ) -> PlacementResolver:
     """Construct the co-located PlacementResolver used by the worker process."""
     return PlacementResolver(
         ExecutionTargetReconciler(
-            service_backed_snapshot_source(cluster_service, target_service),
+            store_backed_snapshot_source(cluster_queries, target_snapshots),
             filters or default_filters(),
         ),
         worker_managers or WorkerManagerRegistry(),

@@ -30,9 +30,8 @@ import pytest
 from kubernetes import client as kubernetes_client
 from kubernetes.client import BatchV1Api
 
-from execution_plane.cluster.cluster_service import ClusterService, NoopDiscoveryMechanism
+from execution_plane.cluster.cluster_registrar import ClusterRegistrar, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
-from execution_plane.execution_target.execution_target_service import ExecutionTargetService
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.cluster import Cluster, ClusterType
 from execution_plane.models.execution_target_placement import KubernetesPlacement
@@ -76,10 +75,9 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
 
     cluster: Cluster | None = None
     try:
-        target_service = ExecutionTargetService(target_store)
-        cluster_service = ClusterService(cluster_store, target_service, NoopDiscoveryMechanism())
+        cluster_registrar = ClusterRegistrar(cluster_store, target_store, NoopDiscoveryMechanism())
 
-        cluster = await cluster_service.provision(
+        cluster = await cluster_registrar.provision(
             _CLUSTER_NAME,
             endpoint,
             token,
@@ -90,7 +88,7 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
         )
 
         if ca_cert:
-            await cluster_service.sync_update(
+            await cluster_registrar.sync_update(
                 cluster.id,
                 updated_by=_CLI_ACTOR_ID,
                 ca_certificate=ca_cert,
@@ -100,10 +98,10 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
 
     finally:
         if cluster is not None:
-            await cluster_service.request_delete(cluster.id, _CLI_ACTOR_ID)
-            for target in await target_service.list(cluster_id=cluster.id):
-                await target_service.finalize_delete(target.id)
-            await cluster_service.finalize_delete(cluster.id)
+            await cluster_store.request_delete(cluster.id, _CLI_ACTOR_ID)
+            for target in await target_store.list(cluster_id=cluster.id):
+                await target_store.finalize_delete(target.id)
+            await cluster_store.finalize_delete(cluster.id)
         await cluster_store.close()
         await target_store.close()
 

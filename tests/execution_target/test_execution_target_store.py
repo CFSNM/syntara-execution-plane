@@ -157,7 +157,7 @@ async def test_get_redacts_credentials_or_returns_secret_when_requested() -> Non
     store = _store(_Session(result=_Result(target)))
 
     redacted = await store.get(target.id)
-    included = await store.get(target.id, include_secret=True)
+    included = await store.get_with_credentials(target.id)
 
     assert redacted is not None
     assert redacted.api_key == ""

@@ -16,17 +16,17 @@ from execution_plane.resource_monitor.probes import ProbeResult
 from tests.resource_monitor.conftest import make_cluster, make_target, settings
 
 
-class _ClusterService:
+class _ClusterStore:
     def __init__(self, clusters: dict[uuid.UUID, object]) -> None:
         self.clusters = clusters
-        self.include_secret_calls: list[bool] = []
+        self.credential_reads: list[uuid.UUID] = []
 
-    async def get(self, cluster_id: uuid.UUID, *, include_secret: bool = False) -> object:
-        self.include_secret_calls.append(include_secret)
+    async def get_with_credentials(self, cluster_id: uuid.UUID) -> object:
+        self.credential_reads.append(cluster_id)
         return self.clusters.get(cluster_id)
 
 
-class _TargetService:
+class _TargetStore:
     def __init__(self, targets: list[object]) -> None:
         self.targets = targets
         self.health: list[tuple[uuid.UUID, bool, str | None, uuid.UUID]] = []
@@ -74,23 +74,23 @@ def _monitor(
     *,
     failure_threshold: int | None = None,
     success_threshold: int | None = None,
-) -> tuple[ResourceMonitor, _TargetService, _ClusterService]:
+) -> tuple[ResourceMonitor, _TargetStore, _ClusterStore]:
     overrides: dict[str, float] = {}
     if failure_threshold is not None:
         overrides["resource_monitor_failure_threshold"] = failure_threshold
     if success_threshold is not None:
         overrides["resource_monitor_success_threshold"] = success_threshold
     ep_settings = settings(**overrides)
-    target_service = _TargetService(targets)
-    cluster_service = _ClusterService(clusters)
+    target_store = _TargetStore(targets)
+    cluster_store = _ClusterStore(clusters)
     monitor = ResourceMonitor(
-        target_service,  # type: ignore[arg-type]
-        cluster_service,  # type: ignore[arg-type]
+        target_store,  # type: ignore[arg-type]
+        cluster_store,  # type: ignore[arg-type]
         ep_settings,
         probe=probe,  # type: ignore[arg-type]
         interval=0.01,
     )
-    return monitor, target_service, cluster_service
+    return monitor, target_store, cluster_store
 
 
 @pytest.mark.asyncio
@@ -98,15 +98,15 @@ async def test_hysteresis_requires_consecutive_failures_before_degraded() -> Non
     cluster = make_cluster()
     target = make_target(cluster)
     probe = _ScriptedProbe(ProbeResult(healthy=False, message="Kubernetes API timed out"))
-    monitor, target_service, cluster_service = _monitor([target], {cluster.id: cluster}, probe)
+    monitor, target_store, cluster_store = _monitor([target], {cluster.id: cluster}, probe)
 
     await monitor.scan()
     await monitor.scan()
-    assert target_service.health == []
+    assert target_store.health == []
 
     await monitor.scan()
-    assert target_service.health == [(target.id, False, "Kubernetes API timed out", RESOURCE_MONITOR_ACTOR_ID)]
-    assert cluster_service.include_secret_calls == [True, True, True]
+    assert target_store.health == [(target.id, False, "Kubernetes API timed out", RESOURCE_MONITOR_ACTOR_ID)]
+    assert cluster_store.credential_reads == [cluster.id, cluster.id, cluster.id]
 
 
 @pytest.mark.asyncio
@@ -114,13 +114,13 @@ async def test_single_success_does_not_clear_degraded() -> None:
     cluster = make_cluster()
     target = make_target(cluster, status=TargetStatus.DEGRADED, status_message="Kubernetes API timed out")
     probe = _ScriptedProbe(ProbeResult(healthy=True))
-    monitor, target_service, _cluster_service = _monitor([target], {cluster.id: cluster}, probe)
+    monitor, target_store, _cluster_store = _monitor([target], {cluster.id: cluster}, probe)
 
     await monitor.scan()
-    assert target_service.health == []
+    assert target_store.health == []
 
     await monitor.scan()
-    assert target_service.health == [(target.id, True, None, RESOURCE_MONITOR_ACTOR_ID)]
+    assert target_store.health == [(target.id, True, None, RESOURCE_MONITOR_ACTOR_ID)]
     assert target.status is TargetStatus.ACTIVE
 
 
@@ -142,10 +142,10 @@ async def test_success_resets_failure_streak() -> None:
             del cluster, target
             return next(results)
 
-    monitor, target_service, _cluster_service = _monitor([target], {cluster.id: cluster}, Alternating())
+    monitor, target_store, _cluster_store = _monitor([target], {cluster.id: cluster}, Alternating())
     for _ in range(4):
         await monitor.scan()
-    assert target_service.health == []
+    assert target_store.health == []
 
 
 @pytest.mark.asyncio
@@ -162,14 +162,14 @@ async def test_one_failing_target_does_not_prevent_probing_the_next() -> None:
                 raise RuntimeError(message)
             return ProbeResult(healthy=False, message="Namespace gone")
 
-    monitor, target_service, _cluster_service = _monitor(
+    monitor, target_store, _cluster_store = _monitor(
         [bad, good],
         {cluster.id: cluster},
         MixedProbe(),
         failure_threshold=1,
     )
     await monitor.scan()
-    assert target_service.health == [(good.id, False, "Namespace gone", RESOURCE_MONITOR_ACTOR_ID)]
+    assert target_store.health == [(good.id, False, "Namespace gone", RESOURCE_MONITOR_ACTOR_ID)]
 
 
 @pytest.mark.asyncio
@@ -177,14 +177,14 @@ async def test_skipped_targets_are_not_written() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
     probe = _ScriptedProbe(ProbeResult(healthy=False, message="ignored", skipped=True))
-    monitor, target_service, _cluster_service = _monitor(
+    monitor, target_store, _cluster_store = _monitor(
         [target],
         {cluster.id: cluster},
         probe,
         failure_threshold=1,
     )
     await monitor.scan()
-    assert target_service.health == []
+    assert target_store.health == []
 
 
 @pytest.mark.asyncio
@@ -192,10 +192,10 @@ async def test_missing_cluster_skips_the_target() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
     probe = _ScriptedProbe(ProbeResult(healthy=False, message="should not run"))
-    monitor, target_service, _cluster_service = _monitor([target], {}, probe, failure_threshold=1)
+    monitor, target_store, _cluster_store = _monitor([target], {}, probe, failure_threshold=1)
     await monitor.scan()
     assert probe.calls == []
-    assert target_service.health == []
+    assert target_store.health == []
 
 
 @pytest.mark.asyncio
@@ -203,15 +203,15 @@ async def test_disappeared_target_does_not_abort_scan() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
     probe = _ScriptedProbe(ProbeResult(healthy=False, message="gone"))
-    monitor, target_service, _cluster_service = _monitor(
+    monitor, target_store, _cluster_store = _monitor(
         [target],
         {cluster.id: cluster},
         probe,
         failure_threshold=1,
     )
-    target_service.fail_record = True
+    target_store.fail_record = True
     await monitor.scan()
-    assert target_service.health == []
+    assert target_store.health == []
 
 
 @pytest.mark.asyncio
@@ -219,7 +219,7 @@ async def test_stop_cancels_the_loop_without_waiting_for_the_interval() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
     probe = _ScriptedProbe(ProbeResult(healthy=True, skipped=True))
-    monitor, _target_service, _cluster_service = _monitor([target], {cluster.id: cluster}, probe)
+    monitor, _target_store, _cluster_store = _monitor([target], {cluster.id: cluster}, probe)
     monitor._interval = 60
     await monitor.start()
     await monitor.stop()
@@ -231,7 +231,7 @@ async def test_start_is_idempotent() -> None:
     cluster = make_cluster()
     target = make_target(cluster)
     probe = _ScriptedProbe(ProbeResult(healthy=True, skipped=True))
-    monitor, _target_service, _cluster_service = _monitor([target], {cluster.id: cluster}, probe)
+    monitor, _target_store, _cluster_store = _monitor([target], {cluster.id: cluster}, probe)
     await monitor.start()
     first = monitor._task
     await monitor.start()

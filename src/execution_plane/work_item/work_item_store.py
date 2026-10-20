@@ -22,6 +22,14 @@ from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.store_base import StoreBase
 from execution_plane.store_errors import StaleClaimError
 from execution_plane.work_item.errors import DuplicateWorkItemError, WorkItemNotFoundError
+from execution_plane.work_item.policy import (
+    DRAIN_BLOCKING_STATUSES,
+    REFRESHABLE_CLAIM_STATUSES,
+    TERMINAL_RESULT_STATUSES,
+    bounded_reconciliation_reason,
+    require_terminal_result_status,
+    validate_completion_retry_delay,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -325,12 +333,7 @@ class WorkStore(StoreBase):
                 self._validate_claim(item, claim_owner_id, claim_generation)
             except StaleClaimError:
                 return None
-            if item.status in {
-                WorkItemStatus.CLAIMED,
-                WorkItemStatus.DISPATCHED,
-                WorkItemStatus.CANCEL_REQUESTED,
-                WorkItemStatus.RECONCILIATION_REQUIRED,
-            }:
+            if item.status in REFRESHABLE_CLAIM_STATUSES:
                 item.claimed_at = datetime.now(UTC)
                 await session.commit()
             return item.status is WorkItemStatus.CANCEL_REQUESTED
@@ -347,6 +350,7 @@ class WorkStore(StoreBase):
         claim_generation: int,
     ) -> None:
         """Persist cold-start allocation identity and its independent cleanup state."""
+        bounded_cleanup_error = bounded_reconciliation_reason(cleanup_error) if cleanup_error is not None else None
         async with self._session_context() as session:
             try:
                 item = await session.get(WorkItem, item_id, with_for_update=True)
@@ -364,7 +368,7 @@ class WorkStore(StoreBase):
                 if resource_uid is not None:
                     item.backend_resource_uid = resource_uid
                 item.resource_cleanup_status = cleanup_status
-                item.resource_cleanup_error = cleanup_error
+                item.resource_cleanup_error = bounded_cleanup_error
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -380,13 +384,14 @@ class WorkStore(StoreBase):
         claim_generation: int | None = None,
     ) -> WorkItem:
         """Atomically persist a terminal result and its completion outbox event."""
+        require_terminal_result_status(status)
         async with self._session_context() as session:
             try:
                 item = await session.get(WorkItem, item_id, with_for_update=True)
                 if item is None:
                     raise WorkItemNotFoundError(item_id)  # noqa: TRY301
                 self._validate_claim(item, claim_owner_id, claim_generation)
-                if item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}:
+                if item.status in TERMINAL_RESULT_STATUSES:
                     return item
                 now = datetime.now(UTC)
                 item.result = result
@@ -445,19 +450,20 @@ class WorkStore(StoreBase):
         claim_generation: int | None = None,
     ) -> WorkItem:
         """Persist an uncertain external outcome without implying failure or rerunning it."""
+        bounded_reason = bounded_reconciliation_reason(reason)
         async with self._session_context() as session:
             try:
                 item = await session.get(WorkItem, item_id, with_for_update=True)
                 if item is None:
                     raise WorkItemNotFoundError(item_id)  # noqa: TRY301
                 self._validate_claim(item, claim_owner_id, claim_generation)
-                if item.status in {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}:
+                if item.status in TERMINAL_RESULT_STATUSES:
                     return item
                 cancel_requested = item.status is WorkItemStatus.CANCEL_REQUESTED
                 item.status = WorkItemStatus.RECONCILIATION_REQUIRED
                 now = datetime.now(UTC)
                 item.result = {
-                    "error": reason,
+                    "error": bounded_reason,
                     "error_type": "WorkloadOutcomeUnknownError",
                     "cancellation_requested": cancel_requested,
                 }
@@ -597,6 +603,7 @@ class WorkStore(StoreBase):
         retry_after_seconds: int = 10,
     ) -> None:
         """Record delivery or schedule a retry for a completion event."""
+        validate_completion_retry_delay(retry_after_seconds)
         async with self._session_context() as session:
             try:
                 event = await session.get(CompletionEvent, event_id, with_for_update=True)
@@ -619,16 +626,7 @@ class WorkStore(StoreBase):
             result = await session.execute(
                 select(col(WorkItem.id))
                 .where(col(WorkItem.execution_target_id) == target_id)
-                .where(
-                    col(WorkItem.status).in_(
-                        [
-                            WorkItemStatus.CLAIMED,
-                            WorkItemStatus.DISPATCHED,
-                            WorkItemStatus.CANCEL_REQUESTED,
-                            WorkItemStatus.RECONCILIATION_REQUIRED,
-                        ]
-                    )
-                )
+                .where(col(WorkItem.status).in_(DRAIN_BLOCKING_STATUSES))
                 .limit(1)
             )
             return result.scalar_one_or_none() is None

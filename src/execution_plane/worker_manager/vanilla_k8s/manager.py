@@ -20,13 +20,13 @@ from execution_plane.models.work_item import WorkItemStatus
 from execution_plane.worker_manager.vanilla_k8s.transport import TransportError, run_job
 
 if TYPE_CHECKING:
-    from execution_plane.cluster.cluster_service import ClusterService
+    from execution_plane.cluster.cluster_store import ClusterStore
     from execution_plane.config import EPSettings
-    from execution_plane.execution_target.execution_target_service import ExecutionTargetService
+    from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.models.cluster import Cluster
     from execution_plane.models.execution_target import ExecutionTarget
     from execution_plane.models.work_item import WorkItem
-    from execution_plane.work_item.work_item_service import WorkItemService
+    from execution_plane.work_item.work_item_store import WorkStore
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -69,15 +69,15 @@ class VanillaK8sWorkerManager:
 
     def __init__(
         self,
-        target_service: ExecutionTargetService,
-        cluster_service: ClusterService,
-        work_service: WorkItemService,
+        target_credentials: ExecutionTargetStore,
+        cluster_credentials: ClusterStore,
+        work_progress: WorkStore,
         settings: EPSettings,
     ) -> None:
         """Bind this backend to EP-owned stores and cold-start settings."""
-        self._target_service = target_service
-        self._cluster_service = cluster_service
-        self._work_service = work_service
+        self._target_credentials = target_credentials
+        self._cluster_credentials = cluster_credentials
+        self._work_progress = work_progress
         self._settings = settings
 
     async def dispatch(self, work_item: WorkItem) -> dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
@@ -91,8 +91,7 @@ class VanillaK8sWorkerManager:
         if work_item.execution_target_id is None:
             message = "Work item has no execution target assigned"
             raise RetryableDispatchError(message)
-        # include_secret=True: the manager needs the API token to reach the cluster.
-        target = await self._target_service.get(work_item.execution_target_id, include_secret=True)
+        target = await self._target_credentials.get_with_credentials(work_item.execution_target_id)
         if target is None or not target.enabled:
             message = "Assigned execution target is unavailable"
             raise RetryableDispatchError(message)
@@ -107,7 +106,7 @@ class VanillaK8sWorkerManager:
         if output_config is not None and not isinstance(output_config, dict):
             message = "Work item payload has an invalid 'output_config'"
             raise WorkItemPayloadError(message)
-        cluster = await self._cluster_service.get(target.cluster_id, include_secret=True)
+        cluster = await self._cluster_credentials.get_with_credentials(target.cluster_id)
         if cluster is None or not cluster.enabled:
             message = "Assigned cluster is unavailable"
             raise RetryableDispatchError(message)
@@ -133,7 +132,7 @@ class VanillaK8sWorkerManager:
                     if exc.output is not None:
                         result["output"] = exc.output
                     status = WorkItemStatus.FAILED
-            await self._work_service.set_result(
+            await self._work_progress.set_result(
                 work_item.id,
                 result,
                 status,
@@ -152,7 +151,7 @@ class VanillaK8sWorkerManager:
 
         def record_resource_state(name: str, uid: str | None, status: str, error: str | None) -> None:
             future = asyncio.run_coroutine_threadsafe(
-                self._work_service.update_backend_resource(
+                self._work_progress.update_backend_resource(
                     work_item.id,
                     resource_name=name,
                     resource_uid=uid,
@@ -203,7 +202,7 @@ class VanillaK8sWorkerManager:
             while not transport_task.done():
                 done, _pending = await asyncio.wait({transport_task}, timeout=5)
                 if not done:
-                    cancellation_requested = await self._work_service.refresh_claim(
+                    cancellation_requested = await self._work_progress.refresh_claim(
                         work_item.id,
                         claim_owner_id=work_item.claim_owner_id,
                         claim_generation=work_item.claim_generation,

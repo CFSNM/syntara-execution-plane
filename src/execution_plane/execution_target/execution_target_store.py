@@ -127,11 +127,16 @@ class ExecutionTargetStore(StoreBase):
                 await self._rollback(session)
                 raise
 
-    async def get(self, target_id: uuid.UUID, *, include_secret: bool = False) -> ExecutionTarget | None:
-        """Return a target by ID, redacting its credential by default."""
+    async def get(self, target_id: uuid.UUID) -> ExecutionTarget | None:
+        """Return a target by ID with its credential redacted."""
         async with self._session_context() as session:
             target = await session.get(ExecutionTarget, target_id)
-            return target if include_secret or target is None else self._without_secret(target)
+            return None if target is None else self._without_secret(target)
+
+    async def get_with_credentials(self, target_id: uuid.UUID) -> ExecutionTarget | None:
+        """Return a target by ID with its credential intact."""
+        async with self._session_context() as session:
+            return await session.get(ExecutionTarget, target_id)
 
     async def list(
         self,

@@ -1,7 +1,6 @@
 """Cancel existing work without a command queue or cancellation journal."""
 
 from execution_plane.commands.context import EPCommandContext
-from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.control import CancelCommand
@@ -20,8 +19,8 @@ class CancelCommandHandler:
         del message
         if not isinstance(payload, CancelCommand):
             raise UnsupportedCommand
-        work_service = WorkItemService(WorkStore.from_engine(context.engine))
-        item = await work_service.request_cancel(
+        work_store = WorkStore.from_engine(context.engine)
+        item = await work_store.request_cancel(
             payload.target_command_id,
             client_id=context.client_id,
         )

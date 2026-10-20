@@ -741,6 +741,21 @@ async def test_update_backend_resource_rejects_stale_and_mismatched_updates() ->
 
 
 @pytest.mark.asyncio
+async def test_set_result_rejects_non_terminal_status() -> None:
+    """Only terminal outcomes can create a completion event."""
+    store = _store()
+    session = _Session()
+    store._session_factory = _SessionFactory(session)
+
+    with pytest.raises(ValueError, match="terminal status"):
+        await store.set_result(uuid.uuid4(), {"output": "ok"}, WorkItemStatus.DISPATCHED)
+
+    assert session.commits == 0
+    assert session.rollbacks == 0
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_set_result_is_idempotent_for_terminal_work() -> None:
     """Terminal work retains its original result and callback event."""
     item = _work_item(status=WorkItemStatus.COMPLETED, result={"output": "old"})
@@ -861,6 +876,24 @@ async def test_request_cancel_rejects_missing_or_foreign_work() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_reason_is_bounded_before_persistence() -> None:
+    """Uncertain outcomes retain a bounded explanation without a service facade."""
+    item = _work_item(status=WorkItemStatus.DISPATCHED)
+    store = _store()
+    session = _Session()
+    session.items[WorkItem] = item
+    store._session_factory = _SessionFactory(session)
+
+    result = await store.mark_reconciliation_required(item.id, "x" * 1500)
+
+    assert result is item
+    assert item.result is not None
+    assert len(item.result["error"]) == 1000
+    assert session.commits == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_mark_reconciliation_required_is_idempotent_for_terminal_work() -> None:
     """Terminal work is not moved back into reconciliation."""
     item = _work_item(status=WorkItemStatus.FAILED, result={"error": "old"})
@@ -934,6 +967,21 @@ async def test_requeue_pre_execute_failure_returns_dispatched_work() -> None:
     assert item.execution_target_id is None
     assert item.claim_owner_id is None
     assert item.claimed_at is None
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_completion_retry_rejects_negative_delay() -> None:
+    """The Work store rejects retry schedules before opening a session."""
+    store = _store()
+    session = _Session()
+    store._session_factory = _SessionFactory(session)
+
+    with pytest.raises(ValueError, match="non-negative"):
+        await store.record_completion_event_attempt(uuid.uuid4(), delivered=False, retry_after_seconds=-1)
+
+    assert session.commits == 0
+    assert session.rollbacks == 0
     await store.close()
 
 

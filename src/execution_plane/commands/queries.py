@@ -7,12 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from execution_plane.api.pagination import decode_cursor
 from execution_plane.api.schemas import ClusterRead, ExecutionTargetRead, WorkItemRead
-from execution_plane.cluster.cluster_service import ClusterService, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.commands.clusters import ResourceNotFoundError
-from execution_plane.execution_target.execution_target_service import ExecutionTargetService
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
-from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 
 
@@ -21,14 +18,10 @@ class EPResourceQueries:
 
     def __init__(self, engine: AsyncEngine, client_id: str) -> None:
         """Borrow the API's engine and verified client identity."""
-        target_service = ExecutionTargetService(ExecutionTargetStore.from_engine(engine))
-        self._clusters = ClusterService(
-            ClusterStore.from_engine(engine),
-            target_service,
-            NoopDiscoveryMechanism(),
-        )
-        self._work = WorkItemService(WorkStore.from_engine(engine))
-        self._targets = target_service
+        target_queries = ExecutionTargetStore.from_engine(engine)
+        self._clusters = ClusterStore.from_engine(engine)
+        self._work = WorkStore.from_engine(engine)
+        self._targets = target_queries
         self._client_id = client_id
 
     async def work_items(

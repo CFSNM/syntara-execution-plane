@@ -13,9 +13,9 @@ from execution_plane.models.execution_target import TargetStatus
 from execution_plane.resource_monitor.probes import DispatchingTargetProbe, ProbeResult
 
 if TYPE_CHECKING:
-    from execution_plane.cluster.cluster_service import ClusterService
+    from execution_plane.cluster.cluster_store import ClusterStore
     from execution_plane.config import EPSettings
-    from execution_plane.execution_target.execution_target_service import ExecutionTargetService
+    from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.models.cluster import Cluster
     from execution_plane.models.execution_target import ExecutionTarget
     from execution_plane.resource_monitor.probes import TargetProbe
@@ -30,16 +30,16 @@ class ResourceMonitor:
 
     def __init__(
         self,
-        target_service: ExecutionTargetService,
-        cluster_service: ClusterService,
+        target_queries: ExecutionTargetStore,
+        cluster_credentials: ClusterStore,
         settings: EPSettings,
         *,
         probe: TargetProbe | None = None,
         interval: float | None = None,
     ) -> None:
-        """Create a monitor using Cluster and ExecutionTarget services and EP settings."""
-        self._target_service = target_service
-        self._cluster_service = cluster_service
+        """Create a monitor using Cluster and ExecutionTarget stores and EP settings."""
+        self._target_queries = target_queries
+        self._cluster_credentials = cluster_credentials
         self._probe = probe or DispatchingTargetProbe(timeout_seconds=settings.resource_monitor_probe_timeout_seconds)
         self._interval = settings.resource_monitor_interval_seconds if interval is None else interval
         self._failure_threshold = settings.resource_monitor_failure_threshold
@@ -61,7 +61,7 @@ class ResourceMonitor:
             raise
 
     async def stop(self) -> None:
-        """Cancel the probe loop before services and stores are disposed."""
+        """Cancel the probe loop before stores are disposed."""
         if self._task is not None:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
@@ -81,7 +81,7 @@ class ResourceMonitor:
 
     async def scan(self) -> None:
         """Probe each registered target once. One target failure does not abort the scan."""
-        targets = await self._target_service.list()
+        targets = await self._target_queries.list()
         clusters: dict[uuid.UUID, Cluster | None] = {}
         seen: set[uuid.UUID] = set()
         for target in targets:
@@ -98,10 +98,7 @@ class ResourceMonitor:
     async def _probe_one(self, target: ExecutionTarget, clusters: dict[uuid.UUID, Cluster | None]) -> None:
         """Load Cluster credentials, probe, and persist after hysteresis."""
         if target.cluster_id not in clusters:
-            clusters[target.cluster_id] = await self._cluster_service.get(
-                target.cluster_id,
-                include_secret=True,
-            )
+            clusters[target.cluster_id] = await self._cluster_credentials.get_with_credentials(target.cluster_id)
         cluster = clusters[target.cluster_id]
         if cluster is None:
             return
@@ -131,7 +128,7 @@ class ResourceMonitor:
     async def _persist(self, target: ExecutionTarget, result: ProbeResult) -> None:
         """Write health when hysteresis has armed. Missing targets are ignored."""
         try:
-            updated = await self._target_service.record_health(
+            updated = await self._target_queries.record_health(
                 target.id,
                 healthy=result.healthy,
                 message=result.message,

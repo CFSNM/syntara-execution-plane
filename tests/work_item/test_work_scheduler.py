@@ -1,12 +1,10 @@
-"""Business policy for the WorkItemService domain boundary."""
+"""WorkScheduler placement use cases."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
-
-import pytest
 
 from execution_plane.execution_target_reconciler.types import (
     ClusterSnapshot,
@@ -19,7 +17,7 @@ from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.work_item.work_item_service import WorkItemService
+from execution_plane.work_item.work_scheduler import WorkScheduler
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -128,7 +126,9 @@ class _WorkStore:
         self.results: list[tuple[dict[str, Any], WorkItemStatus]] = []
         self.assigned_target_ids: list[UUID] = []
         self.released_claims: list[tuple[UUID, int]] = []
-        self.completion_attempts: list[tuple[UUID, bool, str | None, int]] = []
+
+    async def reserve_one(self) -> WorkItem | None:
+        return self.item
 
     async def set_result(
         self,
@@ -170,41 +170,14 @@ class _WorkStore:
         self.released_claims.append((claim_owner_id, claim_generation))
         return True
 
-    async def record_completion_event_attempt(
-        self,
-        event_id: UUID,
-        *,
-        delivered: bool,
-        error: str | None,
-        retry_after_seconds: int,
-    ) -> None:
-        self.completion_attempts.append((event_id, delivered, error, retry_after_seconds))
 
-
-async def test_set_result_rejects_non_terminal_status():
-    item = _reserved_item()
-    store = _WorkStore(item, {})
-    service = WorkItemService(store, _PlacementResolver(ReconcileResult([], [], ResolveOutcome.NO_MATCHING_TARGETS)))
-
-    with pytest.raises(ValueError, match="terminal status"):
-        await service.set_result(
-            item.id,
-            {"error": "invalid"},
-            WorkItemStatus.DISPATCHED,
-            claim_owner_id=item.claim_owner_id,
-            claim_generation=item.claim_generation,
-        )
-
-    assert store.results == []
-
-
-async def test_no_matching_target_fails_reserved_item():
+async def test_no_matching_target_fails_claimed_work():
     item = _reserved_item()
     store = _WorkStore(item, {})
     resolver = _PlacementResolver(ReconcileResult([], [], ResolveOutcome.NO_MATCHING_TARGETS))
-    service = WorkItemService(store, resolver)
+    scheduler = WorkScheduler(store, resolver)
 
-    assert await service.place_reserved_item(item) is None
+    assert await scheduler.claim_and_place_work() is None
 
     assert resolver.requirements == [WorkRequirements(selectors={"env": "production"})]
     assert store.results == [
@@ -216,15 +189,15 @@ async def test_no_matching_target_fails_reserved_item():
     assert store.released_claims == []
 
 
-async def test_exhausted_candidates_release_reserved_item():
+async def test_exhausted_candidates_release_claimed_work():
     cluster = _cluster()
     target = _target(cluster)
     item = _reserved_item()
     store = _WorkStore(item, {target.id: (cluster, target)})
     resolver = _PlacementResolver(ReconcileResult([_snapshot(cluster, target)], [], ResolveOutcome.MATCHED))
-    service = WorkItemService(store, resolver)
+    scheduler = WorkScheduler(store, resolver)
 
-    assert await service.place_reserved_item(item) is None
+    assert await scheduler.claim_and_place_work() is None
 
     assert store.assigned_target_ids == [target.id]
     assert store.released_claims == [(item.claim_owner_id, item.claim_generation)]
@@ -237,22 +210,10 @@ async def test_assigned_candidate_is_returned_without_release():
     item = _reserved_item()
     store = _WorkStore(item, {target.id: (cluster, target)}, assigned_target_id=target.id)
     resolver = _PlacementResolver(ReconcileResult([_snapshot(cluster, target)], [], ResolveOutcome.MATCHED))
-    service = WorkItemService(store, resolver)
+    scheduler = WorkScheduler(store, resolver)
 
-    assert await service.place_reserved_item(item) is item
+    assert await scheduler.claim_and_place_work() is item
 
     assert store.assigned_target_ids == [target.id]
     assert store.released_claims == []
     assert store.results == []
-
-
-async def test_completion_retry_rejects_negative_delay():
-    item = _reserved_item()
-    store = _WorkStore(item, {})
-    service = WorkItemService(store, _PlacementResolver(ReconcileResult([], [], ResolveOutcome.NO_MATCHING_TARGETS)))
-    event_id = uuid4()
-
-    with pytest.raises(ValueError, match="non-negative"):
-        await service.record_completion_event_attempt(event_id, delivered=False, retry_after_seconds=-1)
-
-    assert store.completion_attempts == []

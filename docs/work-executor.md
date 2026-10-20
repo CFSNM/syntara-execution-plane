@@ -1,7 +1,7 @@
 # Execution Plane: Work Executor
 
 The Work Executor is the entry point for work submission into the EP. The Consumer
-(Syntara or AWX) calls it to create a `WorkItem` and persist it through the [`WorkItemService`](work-store.md).
+(Syntara or AWX) calls it to create a `WorkItem` and persist it through the [`Work boundary`](work-store.md).
 
 See [logical_components.md](logical_components.md) for how it fits into the logical decomposition of the Execution Plane service.
 
@@ -10,7 +10,7 @@ See [logical_components.md](logical_components.md) for how it fits into the logi
 ## Responsibility
 
 Accepts a work submission from the Consumer — including a caller-generated UUID and the
-work payload — validates it, and writes a `WorkItem` record through the [`WorkItemService`](work-store.md) in
+work payload — validates it, and writes a `WorkItem` record through the [`Work boundary`](work-store.md) in
 `PENDING` status. Returns to the Consumer immediately; execution is asynchronous.
 
 The UUID is caller-owned. The Consumer generates it before submitting so it can track
@@ -19,7 +19,7 @@ the work item without waiting for a response.
 The async execution path after submission: Work Scheduler claims the `WorkItem` and
 dispatches it via a `WorkerManager`; on successful start the Scheduler hands off to a
 `WorkWatcher` and moves on. The `WorkWatcher` monitors the running job and writes the
-result to the `WorkItemService`, which triggers the Completion Notifier to fire the Consumer's
+result to the Work progress boundary, which triggers the Completion Notifier to fire the Consumer's
 callback. See [logical_components.md](logical_components.md) for the full picture.
 
 ---
@@ -29,7 +29,7 @@ callback. See [logical_components.md](logical_components.md) for the full pictur
 How the Consumer reaches the Work Executor is not settled. Options:
 
 **Current:** AO submits a command to EP; the Work command handler calls the
-[`WorkItemService`](work-store.md), which persists the `WorkItem` and sends a
+[`Work boundary`](work-store.md), which persists the `WorkItem` and sends a
 `pg_notify` on `execution_plane_work_items` to wake the EP worker immediately rather
 than waiting for the poll interval.
 
@@ -56,7 +56,7 @@ Currently, the Work command handler validates the command payload before the Ser
 persists it. The database schema also enforces the persisted structure.
 
 Once a submission interface (REST API, queue) sits between the Consumer and the
-[`WorkItemService`](work-store.md), the EP receives formally unstructured data. At that point the Work Executor
+[`Work boundary`](work-store.md), the EP receives formally unstructured data. At that point the Work Executor
 must validate the payload against known bounds before persisting it: required fields,
 type constraints, and size limits.
 

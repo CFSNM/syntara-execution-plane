@@ -1,7 +1,6 @@
 """Handle work commands through the existing work lifecycle."""
 
 from execution_plane.commands.context import EPCommandContext
-from execution_plane.work_item.work_item_service import WorkItemService
 from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.work import WorkExecute
@@ -19,8 +18,8 @@ class WorkCommandHandler:
         """Use the caller's command UUID as the work item's stable UUID."""
         if not isinstance(payload, WorkExecute):
             raise UnsupportedCommand
-        work_service = WorkItemService(WorkStore.from_engine(context.engine))
-        item = await work_service.dispatch(
+        work_store = WorkStore.from_engine(context.engine)
+        item = await work_store.dispatch(
             client_id=context.client_id,
             item_id=message.command_id,
             payload=payload.model_dump(mode="json"),

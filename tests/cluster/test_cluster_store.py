@@ -128,7 +128,7 @@ async def test_get_redacts_cluster_credentials_and_returns_none_when_missing() -
     result = await store.get(cluster.id)
     assert result is not None
     assert result.api_key == ""
-    with_secret = await store.get(cluster.id, include_secret=True)
+    with_secret = await store.get_with_credentials(cluster.id)
     assert with_secret is cluster
     assert with_secret.api_key == "secret"
     assert await _store(_Session()).get(uuid.uuid4()) is None
