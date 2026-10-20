@@ -1,267 +1,30 @@
-"""Integration tests for EP list endpoints: pagination, default ordering, and sort parameter.
+"""PostgreSQL pagination and sorting requests using the same seeds as test_list_filters.
 
-Module-scoped fixtures insert data once per module to avoid repeated DB round-trips.
-The sort tests share 30 work items (10 per status group); cluster and target tests
-share 5 items each.
-
-Work-item sort dataset layout:
-  Items  0- 9  status=completed  resource_cleanup_status=done
-  Items 10-19  status=failed     resource_cleanup_status=done
-  Items 20-29  status=pending    resource_cleanup_status=pending
-  Alphabetical status order: completed < failed < pending
+Shared dataset and HTTP client definitions live in conftest.py/list_support.py.
+Tests that insert their own rows use a separate authenticated client namespace.
 """
 
 from __future__ import annotations
 
 import base64
 import json
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import httpx
 import pytest
-import pytest_asyncio
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from execution_plane.api.auth import ServiceIdentity, get_service_identity
-from execution_plane.api.main import create_app
 from execution_plane.api.pagination import encode_cursor
-from execution_plane.config import get_ep_settings
 from execution_plane.models.cluster import Cluster, ClusterStatus
-from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
+from tests.integration.postgres.list_support import BASE_TIME as _BASE_TIME
+from tests.integration.postgres.list_support import LIST_SIZE
 
 pytestmark = pytest.mark.integration
 
-ALL_SCOPES = frozenset(
-    {
-        "work-items:read",
-        "clusters:read",
-        "execution-targets:read",
-        "work.execute",
-        "cluster.register",
-        "execution_target.register",
-    }
-)
-
-_BASE_TIME = datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC)
-
-_SORT_GROUPS = [
-    (WorkItemStatus.COMPLETED, "done"),
-    (WorkItemStatus.FAILED, "done"),
-    (WorkItemStatus.PENDING, "pending"),
-]
-_ITEMS_PER_GROUP = 10
-_TOTAL_SORT_ITEMS = _ITEMS_PER_GROUP * len(_SORT_GROUPS)  # 30
-
-
-# =============================================================================
-# Module-scoped data fixtures
-# =============================================================================
-
-
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def shared_work_item_data(migrated_database):
-    """Insert 30 work items once; yield (client_id, db_url)."""
-    client_id = f"test-sort-{uuid.uuid4()}"
-    engine = create_async_engine(migrated_database)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with sessions() as session:
-        for group_index, (status, cleanup_status) in enumerate(_SORT_GROUPS):
-            for i in range(_ITEMS_PER_GROUP):
-                item_index = group_index * _ITEMS_PER_GROUP + i
-                session.add(
-                    WorkItem(
-                        id=uuid.uuid4(),
-                        client_id=client_id,
-                        status=status,
-                        payload={"index": item_index},
-                        resource_cleanup_status=cleanup_status,
-                        created_at=_BASE_TIME + timedelta(seconds=item_index),
-                    )
-                )
-        await session.commit()
-    await engine.dispose()
-    yield client_id, migrated_database
-
-
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def shared_cluster_data(migrated_database):
-    """Insert 5 cluster bindings once; yield (client_id, binding_ids, db_url).
-
-    Sets EP_DATABASE_URL directly because the monkeypatch-based integration fixture
-    is function-scoped and does not run during module fixture setup.
-    """
-    _prev = os.environ.get("EP_DATABASE_URL")
-    os.environ["EP_DATABASE_URL"] = migrated_database
-    get_ep_settings.cache_clear()
-
-    client_id = f"test-clusters-{uuid.uuid4()}"
-    engine = create_async_engine(migrated_database)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    binding_ids = []
-    async with sessions() as session:
-        for i in range(5):
-            binding = ClusterBinding(
-                client_id=client_id,
-                source_integration_id=uuid.uuid4(),
-                name=f"shared-cluster-{i}",
-                endpoint=f"https://shared-cluster-{i}.test",
-                namespace="ep",
-                credential="test-key",
-                revision=1,
-                observed_revision=0,
-                status="pending",
-                enabled=True,
-                labels={},
-                created_at=_BASE_TIME + timedelta(seconds=i),
-                updated_at=_BASE_TIME + timedelta(seconds=i),
-            )
-            session.add(binding)
-            binding_ids.append(str(binding.source_integration_id))
-        await session.commit()
-    await engine.dispose()
-
-    if _prev is None:
-        os.environ.pop("EP_DATABASE_URL", None)
-    else:
-        os.environ["EP_DATABASE_URL"] = _prev
-    get_ep_settings.cache_clear()
-
-    yield client_id, binding_ids, migrated_database
-
-
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def shared_target_data(migrated_database):
-    """Insert 5 execution targets once; yield (client_id, target_ids, db_url).
-
-    Sets EP_DATABASE_URL directly for the same reason as shared_cluster_data.
-    """
-    _prev = os.environ.get("EP_DATABASE_URL")
-    os.environ["EP_DATABASE_URL"] = migrated_database
-    get_ep_settings.cache_clear()
-
-    client_id = f"test-targets-{uuid.uuid4()}"
-    engine = create_async_engine(migrated_database)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    target_ids = []
-    async with sessions() as session:
-        cluster = Cluster(
-            id=uuid.uuid4(),
-            source_client_id=client_id,
-            source_integration_id=uuid.uuid4(),
-            name="shared-cluster",
-            endpoint="https://shared-cluster.test",
-            api_key="secret",
-            status=ClusterStatus.ACTIVE,
-            created_by=uuid.uuid4(),
-            updated_by=uuid.uuid4(),
-            created_at=_BASE_TIME,
-            updated_at=_BASE_TIME,
-        )
-        session.add(cluster)
-        await session.flush()
-        for i in range(5):
-            target = ExecutionTarget(
-                id=uuid.uuid4(),
-                cluster_id=cluster.id,
-                name=f"shared-target-{i}",
-                backend_type=BackendType.VANILLA_K8S,
-                endpoint="https://target.test",
-                placement=KubernetesPlacement(namespace="ep"),
-                status=TargetStatus.ACTIVE,
-                enabled=True,
-                is_default=False,
-                api_key="secret",
-                labels={},
-                created_by=uuid.uuid4(),
-                updated_by=uuid.uuid4(),
-                created_at=_BASE_TIME + timedelta(seconds=i),
-                updated_at=_BASE_TIME + timedelta(seconds=i),
-            )
-            session.add(target)
-            target_ids.append(str(target.id))
-        await session.commit()
-    await engine.dispose()
-
-    if _prev is None:
-        os.environ.pop("EP_DATABASE_URL", None)
-    else:
-        os.environ["EP_DATABASE_URL"] = _prev
-    get_ep_settings.cache_clear()
-
-    yield client_id, target_ids, migrated_database
-
-
-# =============================================================================
-# Function-scoped test fixtures
-# =============================================================================
-
-
-@pytest.fixture
-async def pg_client(migrated_database):
-    """Yield (http_client, sessions, client_id) with a unique client_id per test."""
-    client_id = f"test-pagination-{uuid.uuid4()}"
-    engine = create_async_engine(migrated_database)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    app = create_app()
-    app.state.ep_engine = engine
-    app.state.ep_session_factory = sessions
-    app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(client_id=client_id, scopes=ALL_SCOPES)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://ep.test") as client:
-        yield client, sessions, client_id
-    await engine.dispose()
-
-
-@pytest.fixture
-async def sort_client(shared_work_item_data):
-    """Function-scoped HTTP client backed by the module-scoped work-item data."""
-    client_id, db_url = shared_work_item_data
-    engine = create_async_engine(db_url)
-    app = create_app()
-    app.state.ep_engine = engine
-    app.state.ep_session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(
-        client_id=client_id, scopes=frozenset({"work-items:read"})
-    )
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://ep.test") as client:
-        yield client
-    await engine.dispose()
-
-
-@pytest.fixture
-async def clusters_client(shared_cluster_data):
-    """Function-scoped HTTP client backed by the module-scoped cluster data."""
-    client_id, binding_ids, db_url = shared_cluster_data
-    engine = create_async_engine(db_url)
-    app = create_app()
-    app.state.ep_engine = engine
-    app.state.ep_session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(
-        client_id=client_id, scopes=frozenset({"clusters:read"})
-    )
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://ep.test") as client:
-        yield client, binding_ids
-    await engine.dispose()
-
-
-@pytest.fixture
-async def targets_client(shared_target_data):
-    """Function-scoped HTTP client backed by the module-scoped target data."""
-    client_id, target_ids, db_url = shared_target_data
-    engine = create_async_engine(db_url)
-    app = create_app()
-    app.state.ep_engine = engine
-    app.state.ep_session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(
-        client_id=client_id, scopes=frozenset({"execution-targets:read"})
-    )
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://ep.test") as client:
-        yield client, target_ids
-    await engine.dispose()
+_TOTAL_SORT_ITEMS = LIST_SIZE
+_ITEMS_PER_GROUP = LIST_SIZE // 2
 
 
 # =============================================================================
@@ -339,7 +102,7 @@ async def _all_items(client, sort: str, limit: int = 100) -> list[dict]:
     return response.json()["resources"]
 
 
-async def _paginate_all(client, sort: str, page_size: int = 7) -> list[dict]:
+async def _paginate_all(client, sort: str, page_size: int = 2) -> list[dict]:
     items: list[dict] = []
     cursor = None
     for _ in range(_TOTAL_SORT_ITEMS + 5):
@@ -354,7 +117,7 @@ async def _paginate_all(client, sort: str, page_size: int = 7) -> list[dict]:
     return items
 
 
-async def _assert_page_round_trip(client, path, expected_ids, *, sort=None, page_size=2) -> None:
+async def _assert_page_round_trip(client, path, expected_ids, *, sort=None, page_size=2, omit_sort_value=False) -> None:
     """Visit every page forward, backward to page one, and forward again."""
     expected_pages = [expected_ids[i : i + page_size] for i in range(0, len(expected_ids), page_size)]
     assert len(expected_pages) >= 3
@@ -363,6 +126,12 @@ async def _assert_page_round_trip(client, path, expected_ids, *, sort=None, page
         params["sort"] = sort
 
     async def page(cursor=None) -> dict:
+        if cursor is not None and omit_sort_value:
+            # Syntara's _make_cursor omits sort_value for created_at sorting.
+            data = json.loads(base64.b64decode(cursor))
+            assert data["sort_field"] == "created_at"
+            assert data.pop("sort_value") == data["created_at"]
+            cursor = encode_cursor(data)
         query = {**params, "cursor": cursor} if cursor is not None else params
         response = await client.get(path, params=query)
         assert response.status_code == 200, response.text
@@ -396,22 +165,37 @@ async def _assert_page_round_trip(client, path, expected_ids, *, sort=None, page
 async def test_work_items_backward_pagination_round_trip(sort_client, sort):
     expected = await _all_items(sort_client, sort=sort or "-created_at")
     await _assert_page_round_trip(
-        sort_client, "/v1/work-items", [row["id"] for row in expected], sort=sort, page_size=7
+        sort_client, "/v1/work-items", [row["id"] for row in expected], sort=sort, page_size=2
     )
 
 
 @pytest.mark.parametrize("sort", [None, "created_at", "-created_at"])
-async def test_clusters_backward_pagination_round_trip(clusters_client, sort):
+async def test_work_items_syntara_created_at_cursor_round_trip(sort_client, sort):
+    expected = await _all_items(sort_client, sort=sort or "-created_at")
+    await _assert_page_round_trip(
+        sort_client,
+        "/v1/work-items",
+        [row["id"] for row in expected],
+        sort=sort,
+        page_size=2,
+        omit_sort_value=True,
+    )
+
+
+@pytest.mark.parametrize("omit_sort_value", [False, True], ids=["ep-cursor", "syntara-cursor"])
+@pytest.mark.parametrize("sort", [None, "created_at", "-created_at"])
+async def test_clusters_backward_pagination_round_trip(clusters_client, sort, omit_sort_value):
     client, binding_ids = clusters_client
     expected = list(reversed(binding_ids)) if sort == "-created_at" else binding_ids
-    await _assert_page_round_trip(client, "/v1/clusters", expected, sort=sort)
+    await _assert_page_round_trip(client, "/v1/clusters", expected, sort=sort, omit_sort_value=omit_sort_value)
 
 
+@pytest.mark.parametrize("omit_sort_value", [False, True], ids=["ep-cursor", "syntara-cursor"])
 @pytest.mark.parametrize("sort", [None, "created_at", "-created_at"])
-async def test_targets_backward_pagination_round_trip(targets_client, sort):
+async def test_targets_backward_pagination_round_trip(targets_client, sort, omit_sort_value):
     client, target_ids = targets_client
     expected = list(reversed(target_ids)) if sort == "-created_at" else target_ids
-    await _assert_page_round_trip(client, "/v1/execution-targets", expected, sort=sort)
+    await _assert_page_round_trip(client, "/v1/execution-targets", expected, sort=sort, omit_sort_value=omit_sort_value)
 
 
 @pytest.mark.parametrize("sort", ["claimed_at", "-claimed_at", "completed_at", "-completed_at"])
@@ -421,7 +205,7 @@ async def test_nullable_work_item_sorts_rejected(sort_client, sort):
 
 
 @pytest.mark.parametrize("path", ["/v1/clusters", "/v1/execution-targets"])
-@pytest.mark.parametrize("sort", ["status", "-status", "id", "cowabunga"])
+@pytest.mark.parametrize("sort", ["placement", "credential", "last_ran_at", "cowabunga"])
 async def test_unsupported_resource_sort_rejected(pg_client, path, sort):
     client, _, _ = pg_client
     response = await client.get(path, params={"sort": sort})
@@ -443,6 +227,7 @@ _BAD_CURSORS = [
     *[
         pytest.param({k: v for k, v in _VALID_CURSOR.items() if k != field}, id=f"missing-{field}")
         for field in _VALID_CURSOR
+        if field != "sort_value"
     ],
     *[
         pytest.param({**_VALID_CURSOR, field: value}, id=f"invalid-{field}-{value!r}")
@@ -487,6 +272,17 @@ async def test_structurally_malformed_cursor_returns_422(pg_client, path, payloa
 async def test_cursor_must_match_requested_sort(pg_client, path, cursor):
     client, _, _ = pg_client
     response = await client.get(path, params={"cursor": encode_cursor(cursor), "sort": "created_at"})
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize(
+    "sort", ["status", "-status", "resource_cleanup_status", "-resource_cleanup_status", "id", "-id"]
+)
+async def test_non_created_at_cursor_requires_sort_value(sort_client, sort):
+    body = (await sort_client.get("/v1/work-items", params={"sort": sort, "limit": 2})).json()
+    data = json.loads(base64.b64decode(body["next"]))
+    del data["sort_value"]
+    response = await sort_client.get("/v1/work-items", params={"sort": sort, "cursor": encode_cursor(data)})
     assert response.status_code == 422, response.text
 
 
@@ -576,7 +372,7 @@ async def test_work_items_cursor_past_last_row(pg_client):
 
 
 # =============================================================================
-# Work items — sort  (shared_work_item_data: 30 items across 3 status groups)
+# Work items — sort  (shared list_datasets: 6 work items with tied creation times)
 # =============================================================================
 
 
@@ -605,7 +401,7 @@ async def test_sort_created_at_desc_first_item_is_newest(sort_client):
 
 async def test_sort_created_at_desc_pagination_covers_all_items(sort_client):
     """Paginating with sort=-created_at yields every item exactly once in order."""
-    items = await _paginate_all(sort_client, sort="-created_at", page_size=7)
+    items = await _paginate_all(sort_client, sort="-created_at", page_size=2)
     assert len(items) == _TOTAL_SORT_ITEMS
     assert len({i["id"] for i in items}) == _TOTAL_SORT_ITEMS
     created_ats = [item["created_at"] for item in items]
@@ -613,19 +409,17 @@ async def test_sort_created_at_desc_pagination_covers_all_items(sort_client):
 
 
 async def test_sort_status_asc_order(sort_client):
-    """sort=status groups items alphabetically: completed, failed, pending."""
+    """sort=status groups the shared rows alphabetically: failed, pending."""
     items = await _all_items(sort_client, sort="status")
     assert len(items) == _TOTAL_SORT_ITEMS
     statuses = [item["status"] for item in items]
     assert statuses == sorted(statuses)
-    assert all(s == "completed" for s in statuses[:_ITEMS_PER_GROUP])
-    assert all(s == "failed" for s in statuses[_ITEMS_PER_GROUP : _ITEMS_PER_GROUP * 2])
-    assert all(s == "pending" for s in statuses[_ITEMS_PER_GROUP * 2 :])
+    assert statuses == ["failed"] * _ITEMS_PER_GROUP + ["pending"] * _ITEMS_PER_GROUP
 
 
 async def test_sort_status_asc_pagination_covers_all_items(sort_client):
     """Paginating with sort=status yields every item exactly once in status order."""
-    items = await _paginate_all(sort_client, sort="status", page_size=7)
+    items = await _paginate_all(sort_client, sort="status", page_size=2)
     assert len(items) == _TOTAL_SORT_ITEMS
     assert len({i["id"] for i in items}) == _TOTAL_SORT_ITEMS
     statuses = [item["status"] for item in items]
@@ -646,12 +440,12 @@ async def test_sort_resource_cleanup_status_asc(sort_client):
     assert len(items) == _TOTAL_SORT_ITEMS
     cleanup_statuses = [item["resource_cleanup_status"] for item in items]
     assert cleanup_statuses == sorted(cleanup_statuses)
-    assert all(s == "done" for s in cleanup_statuses[: _ITEMS_PER_GROUP * 2])
-    assert all(s == "pending" for s in cleanup_statuses[_ITEMS_PER_GROUP * 2 :])
+    assert all(s == "done" for s in cleanup_statuses[:_ITEMS_PER_GROUP])
+    assert all(s == "pending" for s in cleanup_statuses[_ITEMS_PER_GROUP:])
 
 
 # =============================================================================
-# Clusters  (shared_cluster_data: 5 bindings, oldest-first)
+# Clusters  (shared list_datasets: 6 bindings, oldest-first)
 # =============================================================================
 
 
@@ -706,7 +500,7 @@ async def test_clusters_malformed_cursor(clusters_client):
 
 
 # =============================================================================
-# Execution targets  (shared_target_data: 5 targets, oldest-first)
+# Execution targets  (shared list_datasets: 6 targets, oldest-first)
 # =============================================================================
 
 

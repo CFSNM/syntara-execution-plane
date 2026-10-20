@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +19,8 @@ from execution_plane.models.cluster import Cluster
 from execution_plane.models.completion_event import CompletionEvent
 from execution_plane.models.execution_target import ExecutionTarget
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
+from execution_plane.query_filters import apply_list_filters
+from execution_plane.query_sorting import apply_cursor_sort
 from execution_plane.store_base import StoreBase
 from execution_plane.store_errors import StaleClaimError
 from execution_plane.work_item.errors import DuplicateWorkItemError, WorkItemNotFoundError
@@ -37,15 +39,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 _NOTIFY_CHANNEL = "execution_plane_work_items"
-
-
-def _parse_sort_value(field: str, value: str) -> Any:  # noqa: ANN401
-    """Convert a cursor's string sort_value back to the column's native Python type."""
-    if field == "created_at":
-        return datetime.fromisoformat(value)
-    if field == "id":
-        return uuid.UUID(value)
-    return value
 
 
 class WorkStore(StoreBase):
@@ -103,55 +96,22 @@ class WorkStore(StoreBase):
         cursor: dict[str, Any] | None = None,
         sort_field: str = "created_at",
         sort_direction: str = "desc",
+        filters: dict[str, str] | None = None,
     ) -> list[WorkItem]:
-        """Return bounded work for the authenticated client."""
-        if sort_field not in WorkItem.__sortable_fields__:
-            msg = f"Invalid sort field for work items: {sort_field}"
-            raise ValueError(msg)
-
-        sort_col = col(getattr(WorkItem, sort_field))
-        id_col = col(WorkItem.id)
-        asc_dir = sort_direction == "asc"
+        """Adapt syntara.core.services.base.BaseService._build_list_query for owned work."""
         statement = select(WorkItem).where(col(WorkItem.client_id) == client_id)
-
-        if cursor:
-            anchor_id = uuid.UUID(cast("str", cursor["id"]))
-            sort_value_str = cast("str", cursor["sort_value"])
-            anchor_val = _parse_sort_value(sort_field, sort_value_str)
-            going_backward = cursor.get("direction") == "prev"
-
-            if going_backward:
-                if asc_dir:
-                    statement = statement.where(
-                        (sort_col < anchor_val) | ((sort_col == anchor_val) & (id_col < anchor_id))
-                    ).order_by(sort_col.desc(), id_col.desc())
-                else:
-                    statement = statement.where(
-                        (sort_col > anchor_val) | ((sort_col == anchor_val) & (id_col > anchor_id))
-                    ).order_by(sort_col.asc(), id_col.asc())
-            elif asc_dir:
-                statement = statement.where(
-                    (sort_col > anchor_val) | ((sort_col == anchor_val) & (id_col > anchor_id))
-                ).order_by(sort_col.asc(), id_col.asc())
-            else:
-                statement = statement.where(
-                    (sort_col < anchor_val) | ((sort_col == anchor_val) & (id_col < anchor_id))
-                ).order_by(sort_col.desc(), id_col.desc())
-        elif asc_dir:
-            statement = statement.order_by(sort_col.asc(), id_col.asc())
-        else:
-            statement = statement.order_by(sort_col.desc(), id_col.desc())
-
+        statement = apply_list_filters(statement, filters, WorkItem)
+        statement = apply_cursor_sort(statement, WorkItem, cursor, sort_field=sort_field, sort_direction=sort_direction)
         async with self._session_context() as session:
             result = await session.execute(statement.limit(limit))
             return list(result.scalars().all())
 
-    async def count_for_client(self, *, client_id: str) -> int:
-        """Return total work item count for the authenticated client."""
+    async def count_for_client(self, *, client_id: str, filters: dict[str, str] | None = None) -> int:
+        """Adapt syntara.core.services.base.BaseService._get_total_count with client scoping."""
+        statement = select(func.count()).select_from(WorkItem).where(col(WorkItem.client_id) == client_id)
+        statement = apply_list_filters(statement, filters, WorkItem)
         async with self._session_context() as session:
-            result = await session.execute(
-                select(func.count()).select_from(WorkItem).where(col(WorkItem.client_id) == client_id)
-            )
+            result = await session.execute(statement)
             return result.scalar_one()
 
     async def reserve_one(self) -> WorkItem | None:

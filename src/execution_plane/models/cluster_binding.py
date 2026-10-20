@@ -17,7 +17,34 @@ class ClusterBinding(SQLModel, table=True):
     """EP-owned desired state for one client integration and its compute target."""
 
     __tablename__ = "cluster_bindings"
-    __sortable_fields__: ClassVar[list[str]] = ["created_at"]
+    __sortable_fields__: ClassVar[list[str]] = [
+        "id",
+        "created_at",
+        "name",
+        "endpoint",
+        "status",
+        "enabled",
+        "namespace",
+        "desired_revision",
+        "observed_revision",
+        "updated_at",
+    ]
+    # Origin: syntara.core.models.base.BaseResource field allowlists.
+    __filterable_fields__: ClassVar[list[str]] = [
+        "id",
+        "created_at",
+        "name",
+        "endpoint",
+        "status",
+        "enabled",
+        "namespace",
+        "desired_revision",
+        "observed_revision",
+        "updated_at",
+        "cluster_id",
+        "status_message",
+    ]
+    __query_field_aliases__: ClassVar[dict[str, str]] = {"id": "source_integration_id", "desired_revision": "revision"}
     __table_args__ = (Index("ix_cluster_bindings_reconcile", "status", "updated_at"), {"schema": EP_SCHEMA})
 
     client_id: str = Field(sa_column=Column(String(128), primary_key=True))

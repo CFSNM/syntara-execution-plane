@@ -88,6 +88,64 @@ paths:
           type: boolean
           default: false
           title: Include Total
+      - name: id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by id (id=value or id[operator]=value). Operators: eq,
+          in, gt, gte, lt, lte, isnull. Comma-separated values use OR; different fields/operators
+          use AND.'
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by status (status=value or status[operator]=value). Operators:
+          eq, in, gt, gte, lt, lte, isnull. Comma-separated values use OR; different
+          fields/operators use AND.'
+      - name: created_at
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by created_at (created_at=value or created_at[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: claimed_at
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by claimed_at (claimed_at=value or claimed_at[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: completed_at
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by completed_at (completed_at=value or completed_at[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: resource_cleanup_status
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by resource_cleanup_status (resource_cleanup_status=value
+          or resource_cleanup_status[operator]=value). Operators: eq, in, contains,
+          starts_with, gt, gte, lt, lte, isnull. Comma-separated values use OR; different
+          fields/operators use AND.'
+      - name: resource_cleanup_error
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by resource_cleanup_error (resource_cleanup_error=value
+          or resource_cleanup_error[operator]=value). Operators: eq, in, contains,
+          starts_with, gt, gte, lt, lte, isnull. Comma-separated values use OR; different
+          fields/operators use AND.'
       responses:
         '200':
           description: Successful Response
@@ -153,13 +211,31 @@ paths:
         required: false
         schema:
           enum:
+          - id
+          - -id
           - created_at
           - -created_at
+          - name
+          - -name
+          - endpoint
+          - -endpoint
+          - status
+          - -status
+          - enabled
+          - -enabled
+          - namespace
+          - -namespace
+          - desired_revision
+          - -desired_revision
+          - observed_revision
+          - -observed_revision
+          - updated_at
+          - -updated_at
           type: string
-          description: Creation-time sort order; oldest first by default.
+          description: Cluster-binding sort field; oldest first by default.
           default: created_at
           title: Sort
-        description: Creation-time sort order; oldest first by default.
+        description: Cluster-binding sort field; oldest first by default.
       - name: include_total
         in: query
         required: false
@@ -167,6 +243,109 @@ paths:
           type: boolean
           default: false
           title: Include Total
+      - name: id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by id (id=value or id[operator]=value). Operators: eq,
+          in, gt, gte, lt, lte, isnull. Comma-separated values use OR; different fields/operators
+          use AND.'
+      - name: created_at
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by created_at (created_at=value or created_at[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: name
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by name (name=value or name[operator]=value). Operators:
+          eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: endpoint
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by endpoint (endpoint=value or endpoint[operator]=value).
+          Operators: eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by status (status=value or status[operator]=value). Operators:
+          eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: enabled
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by enabled (enabled=value or enabled[operator]=value).
+          Operators: eq, in, isnull. Comma-separated values use OR; different fields/operators
+          use AND.'
+      - name: namespace
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by namespace (namespace=value or namespace[operator]=value).
+          Operators: eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: desired_revision
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by desired_revision (desired_revision=value or desired_revision[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: observed_revision
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by observed_revision (observed_revision=value or observed_revision[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: updated_at
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by updated_at (updated_at=value or updated_at[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: cluster_id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by cluster_id (cluster_id=value or cluster_id[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: status_message
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by status_message (status_message=value or status_message[operator]=value).
+          Operators: eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: labels[key]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Replace key with a label key. Exact value match; empty value
+          tests key existence.
       responses:
         '200':
           description: Successful Response
@@ -232,13 +411,29 @@ paths:
         required: false
         schema:
           enum:
+          - id
+          - -id
           - created_at
           - -created_at
+          - name
+          - -name
+          - endpoint
+          - -endpoint
+          - status
+          - -status
+          - backend_type
+          - -backend_type
+          - cluster_id
+          - -cluster_id
+          - enabled
+          - -enabled
+          - is_default
+          - -is_default
           type: string
-          description: Creation-time sort order; oldest first by default.
+          description: Execution-target sort field; oldest first by default.
           default: created_at
           title: Sort
-        description: Creation-time sort order; oldest first by default.
+        description: Execution-target sort field; oldest first by default.
       - name: include_total
         in: query
         required: false
@@ -246,6 +441,101 @@ paths:
           type: boolean
           default: false
           title: Include Total
+      - name: id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by id (id=value or id[operator]=value). Operators: eq,
+          in, gt, gte, lt, lte, isnull. Comma-separated values use OR; different fields/operators
+          use AND.'
+      - name: created_at
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by created_at (created_at=value or created_at[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: name
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by name (name=value or name[operator]=value). Operators:
+          eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: endpoint
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by endpoint (endpoint=value or endpoint[operator]=value).
+          Operators: eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by status (status=value or status[operator]=value). Operators:
+          eq, in, gt, gte, lt, lte, isnull. Comma-separated values use OR; different
+          fields/operators use AND.'
+      - name: backend_type
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by backend_type (backend_type=value or backend_type[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: cluster_id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by cluster_id (cluster_id=value or cluster_id[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: enabled
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by enabled (enabled=value or enabled[operator]=value).
+          Operators: eq, in, isnull. Comma-separated values use OR; different fields/operators
+          use AND.'
+      - name: is_default
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by is_default (is_default=value or is_default[operator]=value).
+          Operators: eq, in, isnull. Comma-separated values use OR; different fields/operators
+          use AND.'
+      - name: last_ran_at
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by last_ran_at (last_ran_at=value or last_ran_at[operator]=value).
+          Operators: eq, in, gt, gte, lt, lte, isnull. Comma-separated values use
+          OR; different fields/operators use AND.'
+      - name: status_message
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Filter by status_message (status_message=value or status_message[operator]=value).
+          Operators: eq, in, contains, starts_with, gt, gte, lt, lte, isnull. Comma-separated
+          values use OR; different fields/operators use AND.'
+      - name: labels[key]
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Replace key with a label key. Exact value match; empty value
+          tests key existence.
       responses:
         '200':
           description: Successful Response

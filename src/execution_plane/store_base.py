@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Self
-from uuid import UUID
+from typing import TYPE_CHECKING, Self
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -14,30 +12,7 @@ from execution_plane.store_errors import StoreConfigurationError, StoreSessionEr
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from sqlalchemy import Select
     from sqlalchemy.pool import Pool
-
-
-def apply_created_at_cursor(
-    statement: Select[Any],
-    cursor: dict[str, Any] | None,
-    ts_col: Any,  # noqa: ANN401
-    id_col: Any,  # noqa: ANN401
-    *,
-    sort_direction: str = "asc",
-) -> Select[Any]:
-    """Apply creation-time keyset filtering and ordering inside a store."""
-    ascending = (sort_direction == "asc") != (cursor is not None and cursor["direction"] == "prev")
-    if cursor is not None:
-        anchor_ts = datetime.fromisoformat(cursor["sort_value"])
-        anchor_id = UUID(cursor["id"])
-        if ascending:
-            statement = statement.where((ts_col > anchor_ts) | ((ts_col == anchor_ts) & (id_col > anchor_id)))
-        else:
-            statement = statement.where((ts_col < anchor_ts) | ((ts_col == anchor_ts) & (id_col < anchor_id)))
-    if ascending:
-        return statement.order_by(ts_col.asc(), id_col.asc())
-    return statement.order_by(ts_col.desc(), id_col.desc())
 
 
 class StoreBase:

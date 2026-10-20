@@ -13,7 +13,9 @@ from execution_plane.labels import labels_with_execution_target_id, merge_user_l
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
-from execution_plane.store_base import StoreBase, apply_created_at_cursor
+from execution_plane.query_filters import apply_list_filters
+from execution_plane.query_sorting import apply_cursor_sort
+from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
     import uuid
@@ -173,28 +175,33 @@ class ExecutionTargetStore(StoreBase):
         limit: int,
         target_id: uuid.UUID | None = None,
         cursor: dict[str, Any] | None = None,
+        sort_field: str = "created_at",
         sort_direction: str = "asc",
+        filters: dict[str, str] | None = None,
     ) -> Sequence[ExecutionTarget]:
-        """List targets owned by clusters belonging to one service client."""
+        """Adapt syntara.core.services.base.BaseService._build_list_query with client scoping."""
         statement = select(ExecutionTarget).join(Cluster).where(col(Cluster.source_client_id) == client_id)
         if target_id is not None:
             statement = statement.where(col(ExecutionTarget.id) == target_id)
-        statement = apply_created_at_cursor(
-            statement, cursor, col(ExecutionTarget.created_at), col(ExecutionTarget.id), sort_direction=sort_direction
+        statement = apply_list_filters(statement, filters, ExecutionTarget)
+        statement = apply_cursor_sort(
+            statement, ExecutionTarget, cursor, sort_field=sort_field, sort_direction=sort_direction
         )
         async with self._session_context() as session:
             result = await session.execute(statement.limit(limit))
             return [self._without_secret(target) for target in result.scalars().all()]
 
-    async def count_for_client(self, client_id: str) -> int:
-        """Return the number of targets owned through one service client's clusters."""
+    async def count_for_client(self, client_id: str, filters: dict[str, str] | None = None) -> int:
+        """Adapt syntara.core.services.base.BaseService._get_total_count using the same filters."""
+        statement = (
+            select(func.count())
+            .select_from(ExecutionTarget)
+            .join(Cluster)
+            .where(col(Cluster.source_client_id) == client_id)
+        )
+        statement = apply_list_filters(statement, filters, ExecutionTarget)
         async with self._session_context() as session:
-            result = await session.execute(
-                select(func.count())
-                .select_from(ExecutionTarget)
-                .join(Cluster)
-                .where(col(Cluster.source_client_id) == client_id)
-            )
+            result = await session.execute(statement)
             return result.scalar_one()
 
     async def request_delete(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:

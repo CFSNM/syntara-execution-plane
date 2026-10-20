@@ -12,7 +12,9 @@ from execution_plane.labels import labels_with_cluster_id, merge_user_labels
 from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
 from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane.models.execution_target import ExecutionTarget, TargetStatus
-from execution_plane.store_base import StoreBase, apply_created_at_cursor
+from execution_plane.query_filters import apply_list_filters
+from execution_plane.query_sorting import apply_cursor_sort
+from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
     import uuid
@@ -155,27 +157,26 @@ class ClusterStore(StoreBase):
         *,
         limit: int,
         cursor: dict[str, Any] | None = None,
+        sort_field: str = "created_at",
         sort_direction: str = "asc",
+        filters: dict[str, str] | None = None,
     ) -> Sequence[ClusterBinding]:
-        """List desired-state bindings owned by one service client."""
+        """Adapt syntara.core.services.base.BaseService._build_list_query with client scoping."""
         statement = select(ClusterBinding).where(col(ClusterBinding.client_id) == client_id)
-        statement = apply_created_at_cursor(
-            statement,
-            cursor,
-            col(ClusterBinding.created_at),
-            col(ClusterBinding.source_integration_id),
-            sort_direction=sort_direction,
+        statement = apply_list_filters(statement, filters, ClusterBinding)
+        statement = apply_cursor_sort(
+            statement, ClusterBinding, cursor, sort_field=sort_field, sort_direction=sort_direction
         )
         async with self._session_context() as session:
             result = await session.execute(statement.limit(limit))
             return list(result.scalars().all())
 
-    async def count_bindings_for_client(self, client_id: str) -> int:
-        """Return the number of desired-state bindings owned by one service client."""
+    async def count_bindings_for_client(self, client_id: str, filters: dict[str, str] | None = None) -> int:
+        """Adapt syntara.core.services.base.BaseService._get_total_count using the same filters."""
+        statement = select(func.count()).select_from(ClusterBinding).where(col(ClusterBinding.client_id) == client_id)
+        statement = apply_list_filters(statement, filters, ClusterBinding)
         async with self._session_context() as session:
-            result = await session.execute(
-                select(func.count()).select_from(ClusterBinding).where(col(ClusterBinding.client_id) == client_id)
-            )
+            result = await session.execute(statement)
             return result.scalar_one()
 
     async def get_binding_for_client(

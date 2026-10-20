@@ -1,4 +1,15 @@
-"""Cursor-based pagination utilities for EP list endpoints."""
+"""EP pagination models and helpers adapted from Syntara's pagination modules.
+
+Source mapping:
+- ``syntara.core.models.base.query_params``: list query controls and page limits.
+- ``syntara.core.models.pagination``: the ``ResourcesResponse`` envelope.
+- ``syntara.core.utils.cursor``: cursor encoding, decoding, and value serialization.
+- ``syntara.core.utils.pagination``: N+1 trimming and next/prev response cursors.
+
+EP combines these pieces here, declares endpoint-specific sortable fields, and
+validates cursor anchors and sort compatibility before querying. Creation-time
+cursors may omit sort_value as in Syntara; emitted EP cursors retain that field.
+"""
 
 from __future__ import annotations
 
@@ -49,12 +60,56 @@ class WorkItemListParams(EPListParams):
     ] = Field(default="-created_at", description="Work-item sort field; newest first by default.")
 
 
-class CreatedAtListParams(EPListParams):
-    """Clusters and execution targets support creation-time sorting, oldest first by default."""
+class ExecutionTargetListParams(EPListParams):
+    """Adapt syntara.core.models.base.query_params.BaseListParams for execution targets."""
 
-    sort: Literal["created_at", "-created_at"] = Field(
-        default="created_at", description="Creation-time sort order; oldest first by default."
-    )
+    sort: Literal[
+        "id",
+        "-id",
+        "created_at",
+        "-created_at",
+        "name",
+        "-name",
+        "endpoint",
+        "-endpoint",
+        "status",
+        "-status",
+        "backend_type",
+        "-backend_type",
+        "cluster_id",
+        "-cluster_id",
+        "enabled",
+        "-enabled",
+        "is_default",
+        "-is_default",
+    ] = Field(default="created_at", description="Execution-target sort field; oldest first by default.")
+
+
+class ClusterListParams(EPListParams):
+    """Adapt syntara.core.models.base.query_params.BaseListParams for cluster bindings."""
+
+    sort: Literal[
+        "id",
+        "-id",
+        "created_at",
+        "-created_at",
+        "name",
+        "-name",
+        "endpoint",
+        "-endpoint",
+        "status",
+        "-status",
+        "enabled",
+        "-enabled",
+        "namespace",
+        "-namespace",
+        "desired_revision",
+        "-desired_revision",
+        "observed_revision",
+        "-observed_revision",
+        "updated_at",
+        "-updated_at",
+    ] = Field(default="created_at", description="Cluster-binding sort field; oldest first by default.")
 
 
 class ResourcesResponse(BaseModel, Generic[T]):  # noqa: UP046
@@ -111,8 +166,10 @@ def decode_cursor(
     """Decode and validate a cursor, optionally checking its sort against the query.
 
     Derived from syntara.core.utils.cursor.decode_cursor. Unknown fields are
-    ignored; all six known fields are required and must contain strings.
-    Invalid input consistently raises ValueError for an HTTP 422 response.
+    ignored. For created_at sorting, a missing sort_value falls back to
+    created_at, matching Syntara's _make_cursor and BaseService cursor handling.
+    All other known fields are required and must contain strings. Invalid input
+    consistently raises ValueError for an HTTP 422 response.
     """
     if len(token.encode()) > MAX_CURSOR_BYTES:
         msg = "cursor too large"
@@ -125,6 +182,8 @@ def decode_cursor(
         raise ValueError(msg) from exc
     if not isinstance(data, dict):
         raise ValueError(_CURSOR_NOT_OBJECT)  # noqa: TRY004 - invalid cursors consistently map to HTTP 422
+    if data.get("sort_field") == "created_at" and "sort_value" not in data:
+        data["sort_value"] = data.get("created_at")
     if any(not isinstance(data.get(field), str) for field in VALID_CURSOR_FIELDS):
         msg = "cursor requires string id, created_at, direction, sort_field, sort_direction, and sort_value fields"
         raise ValueError(msg)
