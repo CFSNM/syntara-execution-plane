@@ -14,7 +14,8 @@ This script:
 
 Usage:
     make setup && uvx podman-compose up --build -d
-    uv run python tools/deploy_kind_execution_target.py
+    AO_ADMIN_PASSWORD=<password> uv run python tools/deploy_kind_execution_target.py \
+      --create-ao-credential --ao-insecure
 
     # Then list targets:
     TOKEN=$(uv run python tools/generate_jwt_for_ep.py)
@@ -47,19 +48,27 @@ from execution_plane_client.protocol import Command, CommandScope, MessageEnvelo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CLUSTER_NAME = "ep-kind"
 DEFAULT_NAMESPACE = "execution-plane"
-DISPATCHER_SA = "syntara-dispatcher"
 DEFAULT_BINDING_NAME = "kind-local"
 DEFAULT_API_URL = "https://127.0.0.1:8001"
+DEFAULT_AO_API_URL = "https://127.0.0.1:8443"
 DEFAULT_WAIT_SECONDS = 90
+DEFAULT_SERVICE_ACCOUNT = "syntara-dispatcher"
 KIND_NETWORK = "kind"
 CONTROL_PLANE_PORT = 6443
 EP_CA_PATH = PROJECT_ROOT / ".secrets" / "certs" / "ca.pem"
 WORKLOAD_RBAC_PATH = PROJECT_ROOT / "deploy" / "kubernetes" / "execution-target" / "rbac.yaml"
+CREATE_AO_CREDENTIAL_PATH = PROJECT_ROOT / "tools" / "create_ao_credential.py"
 
 
-def _run(args: list[str], *, input_text: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    args: list[str],
+    *,
+    input_text: str | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Run a host command and return stdout/stderr as text."""
-    return subprocess.run(args, check=check, capture_output=True, text=True, input=input_text)
+    return subprocess.run(args, check=check, capture_output=True, text=True, input=input_text, env=env)
 
 
 def _require_binaries() -> None:
@@ -133,52 +142,41 @@ def apply_workload_rbac(kubeconfig: Path, namespace: str) -> None:
     kubectl(kubeconfig, "apply", "-f", "-", input_text=manifest)
 
 
-def service_account_token(kubeconfig: Path, namespace: str) -> str:
-    """Mint a long-lived token the EP worker can send as a Bearer credential."""
-    result = kubectl(
+def create_ao_credential(
+    *,
+    kubeconfig: Path,
+    cluster_name: str,
+    namespace: str,
+    api_url: str,
+    admin_password: str,
+    insecure: bool,
+) -> uuid.UUID:
+    """Create or refresh the AO credential for the Kind dispatcher token."""
+    token_result = kubectl(
         kubeconfig,
         "create",
         "token",
-        DISPATCHER_SA,
+        DEFAULT_SERVICE_ACCOUNT,
         "--namespace",
         namespace,
         "--duration",
-        "8760h",
-        check=False,
+        "12h",
     )
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip()
-    print("[INFO] kubectl create token failed; falling back to a bound service-account secret")
-    secret_name = f"{DISPATCHER_SA}-token"
-    secret_manifest = f"""
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {secret_name}
-  namespace: {namespace}
-  annotations:
-    kubernetes.io/service-account.name: {DISPATCHER_SA}
-type: kubernetes.io/service-account-token
-"""
-    kubectl(kubeconfig, "apply", "-f", "-", input_text=secret_manifest)
-    for _ in range(30):
-        secret = kubectl(
-            kubeconfig,
-            "get",
-            "secret",
-            secret_name,
-            "--namespace",
-            namespace,
-            "-o",
-            "json",
-        )
-        data = json.loads(secret.stdout).get("data") or {}
-        encoded = data.get("token")
-        if encoded:
-            return base64.b64decode(encoded).decode("ascii")
-        time.sleep(1)
-    msg = "Timed out waiting for a service-account token Secret"
-    raise TimeoutError(msg)
+    environment = dict(os.environ)
+    environment["AO_ADMIN_PASSWORD"] = admin_password
+    environment["AO_CREDENTIAL_TOKEN"] = token_result.stdout.strip()
+    arguments = [
+        sys.executable,
+        str(CREATE_AO_CREDENTIAL_PATH),
+        "--api-url",
+        api_url,
+        "--cluster-name",
+        cluster_name,
+    ]
+    if insecure:
+        arguments.append("--insecure")
+    result = _run(arguments, env=environment)
+    return uuid.UUID(result.stdout.strip())
 
 
 def cluster_ca_pem(kubeconfig: Path) -> str:
@@ -309,7 +307,7 @@ def upsert_binding(
     name: str,
     endpoint: str,
     namespace: str,
-    credential: str,
+    credential_ref: uuid.UUID,
     ca_certificate: str,
 ) -> dict[str, Any]:
     """Submit versioned desired state for the kind cluster."""
@@ -320,7 +318,7 @@ def upsert_binding(
         "name": name,
         "endpoint": endpoint,
         "namespace": namespace,
-        "credential": credential,
+        "credential_ref": str(credential_ref),
         "ca_certificate": ca_certificate,
         "enabled": True,
         "is_default": True,
@@ -400,7 +398,7 @@ def register_kind_binding(
     binding_name: str,
     endpoint: str,
     namespace: str,
-    credential: str,
+    credential_ref: uuid.UUID,
     ca_certificate: str,
     wait_seconds: int,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -415,15 +413,15 @@ def register_kind_binding(
         name=binding_name,
         endpoint=endpoint,
         namespace=namespace,
-        credential=credential,
+        credential_ref=credential_ref,
         ca_certificate=ca_certificate,
     )
     binding = wait_for_binding(api_url, token, integration_id, wait_seconds)
     return binding, list_execution_targets(api_url, token)
 
 
-def main() -> int:
-    """Create kind, register the cluster binding, and wait until the target is ready."""
+def _parse_args() -> argparse.Namespace:
+    """Parse command-line options for the local Kind target workflow."""
     parser = argparse.ArgumentParser(
         description="Deploy a kind cluster and register it as an Execution Plane target",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -437,10 +435,41 @@ def main() -> int:
     )
     parser.add_argument("--binding-name", default=DEFAULT_BINDING_NAME)
     parser.add_argument("--api-url", default=os.environ.get("EP_API_URL", DEFAULT_API_URL))
+    parser.add_argument(
+        "--credential-ref",
+        type=uuid.UUID,
+        default=uuid.UUID(os.environ["EP_KIND_CREDENTIAL_REF"]) if os.environ.get("EP_KIND_CREDENTIAL_REF") else None,
+        help="AO Credential UUID that grants access to this kind cluster",
+    )
+    parser.add_argument("--create-ao-credential", action="store_true")
+    parser.add_argument("--ao-api-url", default=os.environ.get("AO_API_BASE", DEFAULT_AO_API_URL))
+    parser.add_argument("--ao-admin-password-file", type=Path)
+    parser.add_argument("--ao-insecure", action="store_true")
     parser.add_argument("--wait-seconds", type=int, default=DEFAULT_WAIT_SECONDS)
     parser.add_argument("--recreate", action="store_true", help="Delete and recreate the kind cluster")
     parser.add_argument("--host-worker", action="store_true", help="Use the host endpoint for AO's make dev")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def _ao_admin_password(args: argparse.Namespace) -> str:
+    """Read the AO admin password without placing it on the command line."""
+    if args.ao_admin_password_file is not None:
+        password = args.ao_admin_password_file.read_text(encoding="utf-8").strip()
+    else:
+        password = os.environ.get("AO_ADMIN_PASSWORD", "")
+    if not password:
+        msg = "--ao-admin-password-file or AO_ADMIN_PASSWORD is required with --create-ao-credential"
+        raise RuntimeError(msg)
+    return password
+
+
+def main() -> int:
+    """Create kind, register the cluster binding, and wait until the target is ready."""
+    args = _parse_args()
+    if args.credential_ref is None and not args.create_ao_credential:
+        msg = "--credential-ref, EP_KIND_CREDENTIAL_REF, or --create-ao-credential is required"
+        raise RuntimeError(msg)
+    admin_password = _ao_admin_password(args) if args.create_ao_credential and args.credential_ref is None else ""
 
     kubeconfig: Path | None = None
     try:
@@ -451,7 +480,15 @@ def main() -> int:
             kubeconfig = Path(handle.name)
         export_kubeconfig(args.cluster_name, kubeconfig)
         apply_workload_rbac(kubeconfig, args.namespace)
-        credential = service_account_token(kubeconfig, args.namespace)
+        if args.credential_ref is None:
+            args.credential_ref = create_ao_credential(
+                kubeconfig=kubeconfig,
+                cluster_name=args.cluster_name,
+                namespace=args.namespace,
+                api_url=args.ao_api_url,
+                admin_password=admin_password,
+                insecure=args.ao_insecure,
+            )
         ca_certificate = cluster_ca_pem(kubeconfig)
         endpoint = f"https://{node_internal_ip(kubeconfig)}:{CONTROL_PLANE_PORT}"
         if args.host_worker:
@@ -467,7 +504,7 @@ def main() -> int:
             binding_name=args.binding_name,
             endpoint=endpoint,
             namespace=args.namespace,
-            credential=credential,
+            credential_ref=args.credential_ref,
             ca_certificate=ca_certificate,
             wait_seconds=args.wait_seconds,
         )

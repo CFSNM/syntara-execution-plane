@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import gc
 import uuid
 from datetime import UTC, datetime
 from typing import Self
 
 import pytest
+from sqlalchemy.orm import make_transient_to_detached
 
 from execution_plane.cluster.cluster_store import (
     ClusterNotEligibleForDefaultError,
@@ -27,7 +29,7 @@ def _cluster(*, status: ClusterStatus = ClusterStatus.ACTIVE, is_default: bool =
         id=uuid.uuid4(),
         name="cluster-a",
         endpoint="https://cluster.example",
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         status=status,
         enabled=status is not ClusterStatus.ERROR,
         is_default=is_default,
@@ -47,7 +49,7 @@ def _target(cluster_id: uuid.UUID) -> ExecutionTarget:
         backend_type=BackendType.VANILLA_K8S,
         endpoint="https://target.example",
         placement=KubernetesPlacement(namespace="execution"),
-        api_key="secret",
+        credential_ref=uuid.uuid4(),
         status=TargetStatus.ACTIVE,
         created_by=uuid.uuid4(),
         created_at=now,
@@ -138,18 +140,30 @@ def _store(session: _Session) -> ClusterStore:
 
 
 @pytest.mark.asyncio
-async def test_get_redacts_cluster_credentials_and_returns_none_when_missing() -> None:
+async def test_get_redacts_credential_refs_and_returns_none_when_missing() -> None:
     cluster = _cluster()
     store = _store(_Session(cluster=cluster))
 
     result = await store.get(cluster.id)
     assert result is not None
-    assert result.api_key == ""
+    assert result.credential_ref == uuid.UUID(int=0)
     with_secret = await store.get_with_credentials(cluster.id)
     assert with_secret is cluster
-    assert with_secret.api_key == "secret"
+    assert with_secret.credential_ref == cluster.credential_ref
     assert await _store(_Session()).get(uuid.uuid4()) is None
     await store.close()
+
+
+def test_public_cluster_is_independent_of_the_original_orm_instance() -> None:
+    cluster = _cluster()
+    make_transient_to_detached(cluster)
+
+    public = ClusterStore._without_secret(cluster)
+    del cluster
+    gc.collect()
+
+    public.status = ClusterStatus.ERROR
+    assert public.status is ClusterStatus.ERROR
 
 
 @pytest.mark.asyncio
@@ -165,14 +179,14 @@ async def test_create_preserves_database_rejection_for_a_duplicate_endpoint() ->
     store = _store(session)
 
     with pytest.raises(IntegrityError):
-        await store.create("cluster-a", "https://cluster.example", "secret", uuid.uuid4())
+        await store.create("cluster-a", "https://cluster.example", uuid.uuid4(), uuid.uuid4())
 
     assert session.rollbacks == 1
     await store.close()
 
 
 @pytest.mark.asyncio
-async def test_list_redacts_clusters_and_supports_status_and_enabled_filters() -> None:
+async def test_list_redacts_credential_refs_and_supports_status_and_enabled_filters() -> None:
     cluster = _cluster()
     store = _store(_Session())
     session = _Session()
@@ -181,7 +195,7 @@ async def test_list_redacts_clusters_and_supports_status_and_enabled_filters() -
 
     result = await store.list(status=ClusterStatus.ACTIVE, enabled=True)
 
-    assert [item.api_key for item in result] == [""]
+    assert [item.credential_ref for item in result] == [uuid.UUID(int=0)]
     await store.close()
 
 
@@ -317,9 +331,10 @@ async def test_finalize_delete_ignores_an_enabled_cluster() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_patches_mutable_fields_and_redacts_credentials() -> None:
+async def test_update_patches_mutable_fields_and_redacts_credential_refs() -> None:
     cluster = _cluster()
     actor_id = uuid.uuid4()
+    credential_ref = uuid.uuid4()
     session = _Session(cluster=cluster)
     store = _store(session)
 
@@ -328,14 +343,14 @@ async def test_update_patches_mutable_fields_and_redacts_credentials() -> None:
         updated_by=actor_id,
         name="renamed-cluster",
         endpoint="https://new.example",
-        api_key="new-secret",
+        credential_ref=credential_ref,
     )
 
     assert cluster.name == "renamed-cluster"
     assert cluster.endpoint == "https://new.example"
-    assert cluster.api_key == "new-secret"
+    assert cluster.credential_ref == credential_ref
     assert cluster.updated_by == actor_id
-    assert result.api_key == ""
+    assert result.credential_ref == uuid.UUID(int=0)
     await store.close()
 
 
@@ -344,14 +359,15 @@ async def test_update_leaves_unspecified_fields_unchanged() -> None:
     cluster = _cluster()
     original_name = cluster.name
     original_endpoint = cluster.endpoint
+    credential_ref = uuid.uuid4()
     session = _Session(cluster=cluster)
     store = _store(session)
 
-    await store.update(cluster.id, updated_by=uuid.uuid4(), api_key="refreshed-key")
+    await store.update(cluster.id, updated_by=uuid.uuid4(), credential_ref=credential_ref)
 
     assert cluster.name == original_name
     assert cluster.endpoint == original_endpoint
-    assert cluster.api_key == "refreshed-key"
+    assert cluster.credential_ref == credential_ref
     await store.close()
 
 
@@ -449,6 +465,7 @@ async def test_reactivate_re_enables_a_draining_cluster() -> None:
     cluster = _cluster(status=ClusterStatus.DRAINING)
     cluster.enabled = False
     actor_id = uuid.uuid4()
+    credential_ref = uuid.uuid4()
     session = _Session(cluster=cluster)
     store = _store(session)
 
@@ -456,7 +473,7 @@ async def test_reactivate_re_enables_a_draining_cluster() -> None:
         cluster.id,
         updated_by=actor_id,
         endpoint="https://new.example",
-        api_key="new-secret",
+        credential_ref=credential_ref,
         labels={"env": "dev"},
     )
 
@@ -464,10 +481,10 @@ async def test_reactivate_re_enables_a_draining_cluster() -> None:
     assert cluster.status is ClusterStatus.ACTIVE
     assert cluster.status_message is None
     assert cluster.endpoint == "https://new.example"
-    assert cluster.api_key == "new-secret"
+    assert cluster.credential_ref == credential_ref
     assert cluster.labels == {"env": "dev"}
     assert cluster.updated_by == actor_id
-    assert result.api_key == ""
+    assert result.credential_ref == uuid.UUID(int=0)
     await store.close()
 
 

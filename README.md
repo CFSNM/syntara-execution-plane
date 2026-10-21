@@ -65,10 +65,14 @@ Run the worker with the same EP database and a fixed AO completion callback URL:
 ```bash
 EP_DATABASE_URL=postgresql+asyncpg://user:password@localhost/execution_plane \
 EP_CREDENTIAL_ENCRYPTION_KEY=<base64url-encoded-32-byte-key> \
-EP_COMPLETION_CALLBACK_URL=https://syntara.example.com/api/execution_plane/v1/events \
-EP_CALLBACK_CA_CERT_PATH=/run/secrets/s2s-ca.pem \
-EP_CALLBACK_CERT_PATH=/run/secrets/execution-plane.crt \
-EP_CALLBACK_KEY_PATH=/run/secrets/execution-plane.key \
+EP_COMPLETION_CALLBACK_URL=https://syntara.example.com/api/execution_plane/v1/commands \
+EP_CREDENTIAL_RESOLUTION_CALLBACK_URL=https://syntara.example.com/api/execution_plane/v1/commands \
+EP_CALLBACK_CA_CERT_PATH=/run/secrets/completion-ca.pem \
+EP_CALLBACK_CERT_PATH=/run/secrets/execution-plane-completion.crt \
+EP_CALLBACK_KEY_PATH=/run/secrets/execution-plane-completion.key \
+EP_CREDENTIAL_RESOLUTION_CALLBACK_CA_CERT_PATH=/run/secrets/credential-resolution-ca.pem \
+EP_CREDENTIAL_RESOLUTION_CALLBACK_CERT_PATH=/run/secrets/execution-plane-credential-resolution.crt \
+EP_CREDENTIAL_RESOLUTION_CALLBACK_KEY_PATH=/run/secrets/execution-plane-credential-resolution.key \
 uv run execution-plane-worker
 ```
 

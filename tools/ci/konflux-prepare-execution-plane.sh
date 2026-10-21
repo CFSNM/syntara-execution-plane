@@ -12,6 +12,9 @@
 #
 # Requires the ep image already built by konflux-build-ep-image.sh, default
 # localhost:5001/<AO_NAMESPACE>/ep:<AAP_VERSION>.
+# CREDENTIAL_REF may name an existing AO credential that can access the Kind
+# cluster's dispatcher service account. When omitted, one is created or
+# refreshed from the dispatcher ServiceAccount token through the AO API.
 set -euo pipefail
 
 export PATH="${HOME}/aap-dev/bin:${PATH}"
@@ -31,8 +34,11 @@ EP_IMAGE="${EP_IMAGE:-localhost:5001/${AO_NAMESPACE}/ep:${AAP_VERSION}}"
 SA_NAME="${SA_NAME:-syntara-dispatcher}"
 CLUSTER_NAME="${CLUSTER_NAME:-27-next-ao-operator}"
 ENDPOINT="${ENDPOINT:-https://kubernetes.default.svc}"
-TOKEN_FILE="${TOKEN_FILE:-/var/tmp/syntara-dispatcher.token}"
 NODE_IMAGE="${NODE_IMAGE:-quay.io/ahetheri/syntara-node-script:migration-test}"
+CREDENTIAL_REF="${CREDENTIAL_REF:-}"
+AO_API_BASE="${AO_API_BASE:-https://127.0.0.1:8443}"
+AO_CREDENTIAL_RESOLUTION_CALLBACK_URL="${AO_CREDENTIAL_RESOLUTION_CALLBACK_URL:-https://${AO_NAME}-backend.${AO_NAMESPACE}.svc:8000/api/execution_plane/v1/commands}"
+AO_COMPLETION_CALLBACK_URL="${AO_COMPLETION_CALLBACK_URL:-https://${AO_NAME}-backend.${AO_NAMESPACE}.svc:8000/api/execution_plane/v1/commands}"
 WORK_DIR=""
 
 if [[ ! -f "${KUBECONFIG}" ]]; then
@@ -47,9 +53,12 @@ if [[ ! -d "${BASE_DIR}" ]]; then
   echo "ERROR: EP manifests not found: ${BASE_DIR}" >&2
   exit 1
 fi
+if [[ -n "${CREDENTIAL_REF}" && ! "${CREDENTIAL_REF}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "ERROR: CREDENTIAL_REF must be a UUID" >&2
+  exit 1
+fi
 
 _cleanup() {
-  rm -f "${TOKEN_FILE}"
   if [[ -n "${WORK_DIR}" ]]; then
     rm -rf "${WORK_DIR}"
   fi
@@ -104,6 +113,17 @@ _ao_jwt_issuer() {
     return 0
   fi
   printf '%s' "https://0.0.0.0:8000"
+}
+
+_create_ao_credential() {
+  local dispatcher_token admin_password
+  dispatcher_token=$(kubectl create token "${SA_NAME}" --namespace "${NAMESPACE}" --duration=12h)
+  admin_password=$(_secret_data myao-initial-admin-password "${AO_NAMESPACE}" password)
+  AO_ADMIN_PASSWORD="${admin_password}" AO_CREDENTIAL_TOKEN="${dispatcher_token}" \
+    python3 "${REPO_ROOT}/tools/create_ao_credential.py" \
+      --api-url "${AO_API_BASE}" \
+      --cluster-name "${CLUSTER_NAME}" \
+      --insecure
 }
 
 _generate_tls() {
@@ -297,13 +317,13 @@ _enable_script_dispatch() {
 }
 
 _register_cluster_binding() {
-  local issuer=$1
+  local issuer=$1 credential_ref=$2
   kubectl get configmap kube-root-ca.crt -n "${NAMESPACE}" \
     -o jsonpath='{.data.ca\.crt}' > "${WORK_DIR}/cluster-ca.pem"
   python3 -c "
 import json, sys, uuid
 from pathlib import Path
-cluster, endpoint, namespace, issuer, token_path, ca_path = sys.argv[1:]
+cluster, endpoint, namespace, issuer, credential_ref, ca_path = sys.argv[1:]
 payload = {
     'source_integration_id': str(uuid.uuid5(uuid.NAMESPACE_URL, f'https://execution-plane.local/kind/{cluster}')),
     'issuer': issuer,
@@ -311,14 +331,14 @@ payload = {
         'name': cluster,
         'endpoint': endpoint,
         'namespace': namespace,
-        'credential': Path(token_path).read_text(),
+        'credential_ref': credential_ref,
         'ca_certificate': Path(ca_path).read_text(),
         'enabled': True,
         'labels': {'execution-plane.syntara.io/local': 'kind'},
     },
 }
 json.dump(payload, sys.stdout)
-" "${CLUSTER_NAME}" "${ENDPOINT}" "${NAMESPACE}" "${issuer}" "${TOKEN_FILE}" "${WORK_DIR}/cluster-ca.pem" \
+" "${CLUSTER_NAME}" "${ENDPOINT}" "${NAMESPACE}" "${issuer}" "${credential_ref}" "${WORK_DIR}/cluster-ca.pem" \
     > "${WORK_DIR}/binding.json"
 
   kubectl exec -i -n "${NAMESPACE}" deploy/execution-plane-api -- \
@@ -370,7 +390,7 @@ with httpx.Client(verify=False, timeout=30.0) as client:
         name=desired["name"],
         endpoint=desired["endpoint"],
         namespace=desired["namespace"],
-        credential=desired["credential"],
+        credential_ref=uuid.UUID(desired["credential_ref"]),
         ca_certificate=desired["ca_certificate"],
         enabled=True,
         labels=desired["labels"],
@@ -471,34 +491,14 @@ if kubectl auth can-i create jobs.batch --as="${DISPATCHER_AS}" -n "${AO_NAMESPA
   exit 1
 fi
 
-echo "=== Long-lived ${SA_NAME} token ==="
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: syntara-dispatcher-token
-  namespace: ${NAMESPACE}
-  annotations:
-    kubernetes.io/service-account.name: ${SA_NAME}
-type: kubernetes.io/service-account-token
-EOF
-TOKEN=""
-for ((i = 1; i <= 30; i++)); do
-  TOKEN=$(kubectl get secret syntara-dispatcher-token -n "${NAMESPACE}" \
-    -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || true)
-  if [[ -n "${TOKEN}" ]]; then
-    break
-  fi
-  sleep 1
-done
-if [[ -z "${TOKEN}" ]]; then
-  echo "ERROR: syntara-dispatcher-token was not populated" >&2
+if [[ -z "${CREDENTIAL_REF}" ]]; then
+  echo "=== Create or refresh the AO credential for ${SA_NAME} ==="
+  CREDENTIAL_REF=$(_create_ao_credential)
+fi
+if [[ ! "${CREDENTIAL_REF}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "ERROR: CREDENTIAL_REF must be the AO credential UUID" >&2
   exit 1
 fi
-printf '%s' "${TOKEN}" > "${TOKEN_FILE}"
-chmod 600 "${TOKEN_FILE}"
-echo "minted ${SA_NAME} token (${#TOKEN} chars)"
-unset TOKEN
 
 _ensure_ep_database
 _ensure_keys_and_tls
@@ -513,7 +513,8 @@ metadata:
   namespace: ${NAMESPACE}
 data:
   ao-jwt-issuer: "${AO_JWT_ISSUER}"
-  ao-completion-callback-url: ""
+  ao-completion-callback-url: "${AO_COMPLETION_CALLBACK_URL}"
+  ao-credential-resolution-callback-url: "${AO_CREDENTIAL_RESOLUTION_CALLBACK_URL}"
 EOF
 
 _apply_ep_workloads
@@ -533,8 +534,7 @@ if ! kubectl rollout status deployment/execution-plane-worker -n "${NAMESPACE}" 
 fi
 kubectl get pods -n "${NAMESPACE}" -o wide
 
-_register_cluster_binding "${AO_JWT_ISSUER}"
-rm -f "${TOKEN_FILE}"
+_register_cluster_binding "${AO_JWT_ISSUER}" "${CREDENTIAL_REF}"
 
 _prepull_node_image "${NODE_IMAGE}"
 _enable_script_dispatch "${NODE_IMAGE}"
