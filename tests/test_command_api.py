@@ -10,6 +10,8 @@ import pytest
 
 from execution_plane.api.auth import ServiceIdentity, get_service_identity
 from execution_plane.api.main import create_app
+from execution_plane.commands.targets import TargetCommandHandler
+from execution_plane.execution_target.execution_target_store import TargetNotEligibleForDefaultError
 from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.control import CancelCommand
@@ -121,6 +123,24 @@ async def test_ingress_rejects_before_domain_effects(change, status):
         response = await client.post("/v1/commands", json=message)
     assert response.status_code == status
     assert "private-secret" not in response.text
+
+
+async def test_ingress_maps_ineligible_default_promotion_to_conflict(monkeypatch):
+    async def reject_promotion(*_args: object, **_kwargs: object) -> None:
+        raise TargetNotEligibleForDefaultError(uuid4())
+
+    monkeypatch.setattr(TargetCommandHandler, "handle", reject_promotion)
+    app = create_app()
+    app.state.ep_engine = object()
+    app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(
+        client_id="ao", scopes=frozenset({"execution_target.update"})
+    )
+    message = command_message("execution_target.update", {"resource_id": str(uuid4()), "is_default": True})
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://ep.test") as client:
+        response = await client.post("/v1/commands", json=message)
+
+    assert response.status_code == 409
 
 
 async def test_strict_json_rejects_duplicate_keys():

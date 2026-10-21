@@ -38,7 +38,7 @@ def _names(result: ReconcileResult) -> set[str]:
 async def test_example_00_empty_selectors_select_the_cluster_default(
     make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
 ) -> None:
-    cluster = make_cluster(name="local-openshift", labels={"cluster": "local-openshift"})
+    cluster = make_cluster(name="local-openshift", labels={"cluster": "local-openshift"}, is_default=True)
     default = make_target(cluster, name="ep-default", is_default=True)
     extra = make_target(cluster, name="ep-gpu", labels={"gpu": "true"})
     resolver = make_reconciler([default, extra])
@@ -96,7 +96,7 @@ async def test_example_04_unmatched_region_is_no_matching_targets(
 async def test_empty_selectors_do_not_mean_match_every_target(
     make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
 ) -> None:
-    cluster = make_cluster()
+    cluster = make_cluster(is_default=True)
     default = make_target(cluster, name="ep-default", is_default=True)
     other = make_target(cluster, name="ns-production", labels={"env": "production"})
     resolver = make_reconciler([default, other])
@@ -107,7 +107,42 @@ async def test_empty_selectors_do_not_mean_match_every_target(
 
 
 @pytest.mark.asyncio
-async def test_default_routing_keeps_all_lifecycle_eligible_when_no_default_flag(
+async def test_empty_selectors_use_the_default_target_on_the_default_cluster(
+    make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
+) -> None:
+    default_cluster = make_cluster(name="default-cluster", is_default=True)
+    other_cluster = make_cluster(name="other-cluster")
+    composed_default = make_target(default_cluster, name="global-default", is_default=True)
+    other_cluster_default = make_target(other_cluster, name="other-cluster-default", is_default=True)
+    other_target = make_target(default_cluster, name="other-target")
+    resolver = make_reconciler([other_cluster_default, other_target, composed_default])
+
+    result = await resolver.resolve(WorkRequirements())
+
+    assert result.outcome is ResolveOutcome.MATCHED
+    assert _names(result) == {"global-default"}
+
+
+@pytest.mark.asyncio
+async def test_empty_selectors_fail_when_the_composed_default_is_unavailable(
+    make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
+) -> None:
+    default_cluster = make_cluster(name="default-cluster", is_default=True)
+    other_cluster = make_cluster(name="other-cluster")
+    unavailable_default = make_target(default_cluster, name="global-default", lifecycle="degraded", is_default=True)
+    other_cluster_default = make_target(other_cluster, name="other-cluster-default", is_default=True)
+    resolver = make_reconciler([unavailable_default, other_cluster_default])
+
+    result = await resolver.resolve(WorkRequirements())
+
+    assert result.outcome is ResolveOutcome.NO_MATCHING_TARGETS
+    assert result.available_targets == []
+    assert result.ineligible_targets[0].target.name == "global-default"
+    assert result.ineligible_targets[0].reason is IneligibilityReason.HEALTH
+
+
+@pytest.mark.asyncio
+async def test_empty_selectors_fail_when_no_default_cluster_exists(
     make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
 ) -> None:
     cluster = make_cluster()
@@ -117,8 +152,24 @@ async def test_default_routing_keeps_all_lifecycle_eligible_when_no_default_flag
 
     result = await resolver.resolve(WorkRequirements())
 
+    assert result.outcome is ResolveOutcome.NO_MATCHING_TARGETS
+    assert result.available_targets == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_selectors_do_not_require_the_default_cluster(
+    make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
+) -> None:
+    default_cluster = make_cluster(name="default-cluster", labels={"region": "east"}, is_default=True)
+    other_cluster = make_cluster(name="other-cluster", labels={"region": "west"})
+    default_target = make_target(default_cluster, name="global-default", is_default=True)
+    selected = make_target(other_cluster, name="west-target", labels={"gpu": "true"})
+    resolver = make_reconciler([default_target, selected])
+
+    result = await resolver.resolve(WorkRequirements(selectors={"region": "west", "gpu": "true"}))
+
     assert result.outcome is ResolveOutcome.MATCHED
-    assert _names(result) == {"ns-a", "ns-b"}
+    assert _names(result) == {"west-target"}
 
 
 @pytest.mark.asyncio
@@ -142,7 +193,7 @@ async def test_disabled_cluster_skips_its_targets_entirely(
     make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
 ) -> None:
     disabled = make_cluster(name="down", enabled=False)
-    active = make_cluster(name="up")
+    active = make_cluster(name="up", is_default=True)
     skipped = make_target(disabled, name="skipped", is_default=True)
     kept = make_target(active, name="kept", is_default=True)
     resolver = make_reconciler([skipped, kept])
@@ -176,7 +227,7 @@ async def test_non_active_and_disabled_targets_are_ineligible(
 async def test_degraded_targets_are_ineligible_for_health(
     make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
 ) -> None:
-    cluster = make_cluster()
+    cluster = make_cluster(is_default=True)
     degraded = make_target(cluster, name="degraded", lifecycle="degraded")
     active = make_target(cluster, name="active", is_default=True)
     resolver = make_reconciler([degraded, active])
@@ -192,7 +243,7 @@ async def test_degraded_targets_are_ineligible_for_health(
 async def test_only_degraded_default_is_no_matching_targets_with_health(
     make_cluster: MakeCluster, make_target: MakeTarget, make_reconciler: MakeReconciler
 ) -> None:
-    cluster = make_cluster()
+    cluster = make_cluster(is_default=True)
     degraded = make_target(cluster, name="ep-default", lifecycle="degraded", is_default=True)
     resolver = make_reconciler([degraded])
 

@@ -36,6 +36,7 @@ class ClusterBinding(SQLModel, table=True):
     project_ids: list[uuid.UUID] | None = Field(default=None, sa_column=Column(UUIDListJSONB(), nullable=True))
     labels: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
     enabled: bool = True
+    is_default: bool = Field(default=False, nullable=False)
     cluster_id: uuid.UUID | None = Field(default=None)
     observed_revision: int = Field(default=0, sa_column=Column(Integer, nullable=False))
     status: str = Field(default="pending", sa_column=Column(String(32), nullable=False))

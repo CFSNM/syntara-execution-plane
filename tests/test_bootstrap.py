@@ -61,6 +61,11 @@ class _ClusterStore:
         self.cluster.enabled = status is not ClusterStatus.ERROR
         return self.cluster
 
+    async def ensure_default(self, _cluster_id: uuid.UUID, _updated_by: uuid.UUID) -> Cluster:
+        assert self.cluster is not None
+        self.cluster.is_default = True
+        return self.cluster
+
 
 class _ExecutionTargetStore:
     def __init__(self, targets: list[ExecutionTarget] | None = None) -> None:
@@ -124,6 +129,7 @@ async def test_bootstrap_creates_a_local_cluster_and_default_target(monkeypatch:
     cluster = await bootstrap.bootstrap_local_cluster("postgresql+asyncpg://localhost/syntara")
 
     assert cluster.status is ClusterStatus.ACTIVE
+    assert cluster.is_default is True
     assert cluster_store.create_calls == 1
     assert target_store.create_calls == 1
     assert target_store.activate_calls == 1

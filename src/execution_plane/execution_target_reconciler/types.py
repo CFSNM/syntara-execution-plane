@@ -59,6 +59,7 @@ class ClusterSnapshot:
     labels: dict[str, str]
     cluster_type: ClusterType
     enabled: bool
+    is_default: bool = False
 
 
 @dataclass(frozen=True)

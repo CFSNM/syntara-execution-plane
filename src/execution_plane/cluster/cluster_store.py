@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 
 from execution_plane.labels import labels_with_cluster_id, merge_user_labels
@@ -25,6 +26,21 @@ class ClusterNotFoundError(LookupError):
     def __init__(self, cluster_id: uuid.UUID) -> None:
         """Identify the missing Cluster."""
         super().__init__(f"Cluster {cluster_id} does not exist")
+
+
+class DefaultClusterError(ValueError):
+    """Raised when an operation would violate global default-Cluster protection."""
+
+
+class ClusterNotEligibleForDefaultError(ValueError):
+    """Raised when a Cluster cannot become the global default."""
+
+    def __init__(self, cluster_id: uuid.UUID) -> None:
+        """Identify the ineligible Cluster."""
+        super().__init__(f"Cluster {cluster_id} is not eligible to become the default")
+
+
+DEFAULT_ADVISORY_LOCK = 703571
 
 
 class ClusterStore(StoreBase):
@@ -222,6 +238,62 @@ class ClusterStore(StoreBase):
                 await session.rollback()
                 raise
 
+    async def set_default(self, cluster_id: uuid.UUID, updated_by: uuid.UUID) -> Cluster:
+        """Atomically promote one Cluster and demote the previous global default."""
+        async with self._session_context() as session:
+            try:
+                await session.execute(select(func.pg_advisory_xact_lock(DEFAULT_ADVISORY_LOCK)))
+                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
+                if cluster is None:
+                    raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
+                if not cluster.enabled or cluster.status is not ClusterStatus.ACTIVE:
+                    raise ClusterNotEligibleForDefaultError(cluster_id)  # noqa: TRY301
+                result = await session.execute(
+                    select(Cluster).where(col(Cluster.is_default).is_(True)).with_for_update()
+                )
+                previous_default = result.scalar_one_or_none()
+                now = datetime.now(UTC)
+                if previous_default is not None and previous_default.id != cluster.id:
+                    previous_default.is_default = False
+                    previous_default.updated_by = updated_by
+                    previous_default.updated_at = now
+                    await session.flush()
+                if not cluster.is_default:
+                    cluster.is_default = True
+                    cluster.updated_by = updated_by
+                    cluster.updated_at = now
+                await session.commit()
+                return self._without_secret(cluster)
+            except IntegrityError as exc:
+                await session.rollback()
+                raise DefaultClusterError from exc
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def ensure_default(self, cluster_id: uuid.UUID, updated_by: uuid.UUID) -> Cluster:
+        """Promote the supplied active Cluster when no global default exists."""
+        async with self._session_context() as session:
+            try:
+                await session.execute(select(func.pg_advisory_xact_lock(DEFAULT_ADVISORY_LOCK)))
+                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
+                if cluster is None:
+                    raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
+                result = await session.execute(
+                    select(Cluster).where(col(Cluster.is_default).is_(True)).with_for_update()
+                )
+                if result.scalar_one_or_none() is None:
+                    if not cluster.enabled or cluster.status is not ClusterStatus.ACTIVE:
+                        raise ClusterNotEligibleForDefaultError(cluster_id)  # noqa: TRY301
+                    cluster.is_default = True
+                    cluster.updated_by = updated_by
+                    cluster.updated_at = datetime.now(UTC)
+                await session.commit()
+                return self._without_secret(cluster)
+            except Exception:
+                await session.rollback()
+                raise
+
     async def reactivate(
         self,
         cluster_id: uuid.UUID,
@@ -313,6 +385,8 @@ class ClusterStore(StoreBase):
                 cluster = await session.get(Cluster, cluster_id, with_for_update=True)
                 if cluster is None:
                     raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
+                if cluster.is_default:
+                    raise DefaultClusterError  # noqa: TRY301
                 now = datetime.now(UTC)
                 cluster.enabled = False
                 cluster.status = ClusterStatus.DRAINING

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-def _cluster(*, status: ClusterStatus = ClusterStatus.REGISTERING) -> Cluster:
+def _cluster(*, status: ClusterStatus = ClusterStatus.REGISTERING, is_default: bool = False) -> Cluster:
     now = datetime.now(UTC)
     return Cluster(
         id=uuid.uuid4(),
@@ -29,6 +29,7 @@ def _cluster(*, status: ClusterStatus = ClusterStatus.REGISTERING) -> Cluster:
         endpoint="https://cluster.example",
         api_key="cluster-secret",
         status=status,
+        is_default=is_default,
         created_by=uuid.uuid4(),
         created_at=now,
         updated_by=uuid.uuid4(),
@@ -260,6 +261,8 @@ class _ClusterStore:
         self.states: list[tuple[ClusterStatus, str | None]] = []
         self.created = False
         self.updates: list[dict[str, object]] = []
+        self.defaults_set: list[uuid.UUID] = []
+        self.defaults_ensured: list[uuid.UUID] = []
 
     async def create(
         self,
@@ -328,6 +331,16 @@ class _ClusterStore:
     ) -> Cluster:
         return self.cluster
 
+    async def set_default(self, cluster_id: uuid.UUID, _updated_by: uuid.UUID) -> Cluster:
+        self.defaults_set.append(cluster_id)
+        self.cluster.is_default = True
+        return self.cluster
+
+    async def ensure_default(self, cluster_id: uuid.UUID, _updated_by: uuid.UUID) -> Cluster:
+        self.defaults_ensured.append(cluster_id)
+        self.cluster.is_default = True
+        return self.cluster
+
 
 class _TargetService:
     def __init__(
@@ -342,6 +355,7 @@ class _TargetService:
         self.created: list[dict[str, object]] = []
         self.targets = targets or []
         self.updated: list[dict[str, object]] = []
+        self.reactivated: list[dict[str, object]] = []
 
     async def create(
         self,
@@ -383,11 +397,8 @@ class _TargetService:
         target_id: uuid.UUID,
         *,
         updated_by: uuid.UUID,
-        endpoint: str | None = None,
-        api_key: str | None = None,
-        placement: ExecutionTargetPlacement,
     ) -> ExecutionTarget:
-        del target_id
+        self.reactivated.append({"target_id": target_id, "updated_by": updated_by})
         return self.targets[0]
 
     async def list(
@@ -465,6 +476,52 @@ async def test_registrar_creates_cluster_with_identity_label_and_cleanses_user_l
 
 
 @pytest.mark.asyncio
+async def test_registrar_provision_promotes_the_requested_global_default() -> None:
+    from execution_plane.cluster.cluster_registrar import ClusterRegistrar
+
+    cluster = _cluster()
+    store = _ClusterStore(cluster)
+    actor_id = uuid.uuid4()
+    service = ClusterRegistrar(store, _TargetService(), _Discovery(object()))
+
+    result = await service.provision(
+        "cluster-a",
+        "https://cluster.example",
+        "cluster-secret",
+        KubernetesPlacement(namespace="execution"),
+        actor_id,
+        is_default=True,
+    )
+
+    assert result.is_default is True
+    assert store.defaults_set == [cluster.id]
+    assert store.defaults_ensured == []
+
+
+@pytest.mark.asyncio
+async def test_registrar_provision_bootstraps_a_default_when_none_exists() -> None:
+    from execution_plane.cluster.cluster_registrar import ClusterRegistrar
+
+    cluster = _cluster()
+    store = _ClusterStore(cluster)
+    actor_id = uuid.uuid4()
+    service = ClusterRegistrar(store, _TargetService(), _Discovery(object()))
+
+    result = await service.provision(
+        "cluster-a",
+        "https://cluster.example",
+        "cluster-secret",
+        KubernetesPlacement(namespace="execution"),
+        actor_id,
+        is_default=False,
+    )
+
+    assert result.is_default is True
+    assert store.defaults_set == []
+    assert store.defaults_ensured == [cluster.id]
+
+
+@pytest.mark.asyncio
 async def test_registrar_update_replaces_user_labels_and_preserves_the_cluster_identity_label() -> None:
     from execution_plane.cluster.cluster_registrar import ClusterRegistrar
     from execution_plane.cluster.cluster_store import ClusterStore
@@ -484,6 +541,35 @@ async def test_registrar_update_replaces_user_labels_and_preserves_the_cluster_i
 
     assert cluster.labels == {"_cluster_id": str(cluster.id), "region": "new"}
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_registrar_sync_update_promotes_the_requested_global_default() -> None:
+    from execution_plane.cluster.cluster_registrar import ClusterRegistrar
+
+    cluster = _cluster()
+    store = _ClusterStore(cluster)
+    actor_id = uuid.uuid4()
+    service = ClusterRegistrar(store, _TargetService(), _Discovery(object()))
+
+    await service.sync_update(cluster.id, updated_by=actor_id, is_default=True)
+
+    assert store.defaults_set == [cluster.id]
+
+
+@pytest.mark.asyncio
+async def test_registrar_sync_update_rejects_demoting_the_current_global_default() -> None:
+    from execution_plane.cluster.cluster_registrar import ClusterRegistrar
+    from execution_plane.cluster.cluster_store import DefaultClusterError
+
+    cluster = _cluster(is_default=True)
+    store = _ClusterStore(cluster)
+    service = ClusterRegistrar(store, _TargetService(), _Discovery(object()))
+
+    with pytest.raises(DefaultClusterError):
+        await service.sync_update(cluster.id, updated_by=uuid.uuid4(), is_default=False)
+
+    assert cluster.is_default is True
 
 
 @pytest.mark.asyncio
@@ -549,6 +635,47 @@ async def test_registrar_creates_every_discovered_target_via_target_port_then_ac
     assert [target["is_default"] for target in targets.created] == [True, False]
     assert store.states == [(ClusterStatus.ACTIVE, None)]
     assert discovery.received is not None
+
+
+@pytest.mark.asyncio
+async def test_registrar_register_promotes_the_requested_global_default() -> None:
+    from execution_plane.cluster.cluster_registrar import (
+        ClusterRegistrar,
+        DiscoveredExecutionTarget,
+        DiscoveryResult,
+    )
+
+    cluster = _cluster()
+    store = _ClusterStore(cluster)
+    targets = _TargetService()
+    discovery = _Discovery(
+        DiscoveryResult.discovered(
+            [
+                DiscoveredExecutionTarget(
+                    "primary",
+                    BackendType.VANILLA_K8S,
+                    "https://one",
+                    "key",
+                    KubernetesPlacement(namespace="default"),
+                    is_default=True,
+                )
+            ]
+        )
+    )
+    service = ClusterRegistrar(store, targets, discovery)
+    actor_id = uuid.uuid4()
+
+    result = await service.register(
+        "cluster-a",
+        "https://cluster.example",
+        "cluster-secret",
+        actor_id,
+        is_default=True,
+    )
+
+    assert result.is_default is True
+    assert store.defaults_set == [cluster.id]
+    assert store.defaults_ensured == []
 
 
 @pytest.mark.asyncio
@@ -675,7 +802,7 @@ async def test_registrar_keeps_cluster_active_when_a_non_default_target_fails() 
 
 
 @pytest.mark.asyncio
-async def test_sync_update_forwards_placement_patch_to_target_port() -> None:
+async def test_sync_update_does_not_rewrite_target_configuration() -> None:
     from execution_plane.cluster.cluster_registrar import ClusterRegistrar
 
     cluster = _cluster()
@@ -686,14 +813,42 @@ async def test_sync_update_forwards_placement_patch_to_target_port() -> None:
     await service.sync_update(
         cluster.id,
         updated_by=uuid.uuid4(),
-        placement=KubernetesPlacement(namespace="updated"),
     )
 
-    placement = targets.updated[0]["placement"]
-    assert isinstance(placement, KubernetesPlacement)
-    assert placement.namespace == "updated"
-    assert placement.node_selectors == []
-    assert placement.tolerations == []
+    assert targets.updated == []
+
+
+@pytest.mark.asyncio
+async def test_reactivate_preserves_the_current_default_target_configuration() -> None:
+    from execution_plane.cluster.cluster_registrar import ClusterRegistrar
+
+    cluster = _cluster(status=ClusterStatus.DRAINING)
+    cluster.enabled = False
+    target = _target(cluster_id=cluster.id, is_default=True)
+    target.endpoint = "https://independent-target.example"
+    target.api_key = "independent-target-secret"
+    target.placement = KubernetesPlacement(
+        namespace="independent",
+        node_selectors=["independent=true"],
+        tolerations=["independent=:NoSchedule"],
+    )
+    targets = _TargetService(targets=[target])
+    actor_id = uuid.uuid4()
+    service = ClusterRegistrar(_ClusterStore(cluster), targets, _Discovery(object()))
+
+    await service.provision(
+        "cluster-a",
+        "https://cluster.example",
+        "cluster-secret",
+        KubernetesPlacement(namespace="updated"),
+        actor_id,
+    )
+
+    assert targets.reactivated == [{"target_id": target.id, "updated_by": actor_id}]
+    assert target.endpoint == "https://independent-target.example"
+    assert target.api_key == "independent-target-secret"
+    assert isinstance(target.placement, KubernetesPlacement)
+    assert target.placement.namespace == "independent"
 
 
 @pytest.mark.asyncio

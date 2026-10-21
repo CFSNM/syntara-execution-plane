@@ -41,6 +41,14 @@ class TargetNotActivatableError(ValueError):
     """Raised when a target is no longer in its registration state."""
 
 
+class TargetNotEligibleForDefaultError(ValueError):
+    """Raised when an execution target cannot become the Cluster default."""
+
+    def __init__(self, target_id: uuid.UUID) -> None:
+        """Identify the ineligible target."""
+        super().__init__(f"Execution target {target_id} is not eligible to become the default")
+
+
 class ClusterNotAvailableError(ValueError):
     """Raised when a target is created for a Cluster that cannot accept targets."""
 
@@ -235,6 +243,48 @@ class ExecutionTargetStore(StoreBase):
                 await self._rollback(session)
                 raise
 
+    async def set_default(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> ExecutionTarget:
+        """Atomically promote one target and demote the Cluster's current default."""
+        async with self._session_context() as session:
+            try:
+                target = await session.get(ExecutionTarget, target_id)
+                if target is None:
+                    raise ExecutionTargetNotFoundError(target_id)  # noqa: TRY301
+                cluster = await session.get(Cluster, target.cluster_id, with_for_update=True)
+                if cluster is None or not cluster.enabled or cluster.status is not ClusterStatus.ACTIVE:
+                    raise ClusterNotAvailableError(target.cluster_id)  # noqa: TRY301
+                target = await session.get(ExecutionTarget, target_id, with_for_update=True)
+                if target is None:
+                    raise ExecutionTargetNotFoundError(target_id)  # noqa: TRY301
+                if not target.enabled or target.status is not TargetStatus.ACTIVE:
+                    raise TargetNotEligibleForDefaultError(target_id)  # noqa: TRY301
+
+                result = await session.execute(
+                    select(ExecutionTarget)
+                    .where(col(ExecutionTarget.cluster_id) == target.cluster_id)
+                    .where(col(ExecutionTarget.is_default).is_(True))
+                    .with_for_update()
+                )
+                previous_default = result.scalar_one_or_none()
+                now = datetime.now(UTC)
+                if previous_default is not None and previous_default.id != target.id:
+                    previous_default.is_default = False
+                    previous_default.updated_by = updated_by
+                    previous_default.updated_at = now
+                    await session.flush()
+                if not target.is_default:
+                    target.is_default = True
+                    target.updated_by = updated_by
+                    target.updated_at = now
+                await self._commit(session)
+                return self._without_secret(target)
+            except IntegrityError as exc:
+                await self._rollback(session)
+                raise DefaultExecutionTargetError from exc
+            except Exception:
+                await self._rollback(session)
+                raise
+
     async def update(
         self,
         target_id: uuid.UUID,
@@ -278,9 +328,6 @@ class ExecutionTargetStore(StoreBase):
         target_id: uuid.UUID,
         *,
         updated_by: uuid.UUID,
-        endpoint: str | None = None,
-        api_key: str | None = None,
-        placement: ExecutionTargetPlacement,
     ) -> ExecutionTarget:
         """Re-enable a DRAINING target and transition it back to ACTIVE."""
         async with self._session_context() as session:
@@ -291,11 +338,6 @@ class ExecutionTargetStore(StoreBase):
                 target.enabled = True
                 target.status = TargetStatus.ACTIVE
                 target.status_message = None
-                if endpoint is not None:
-                    target.endpoint = endpoint
-                if api_key is not None:
-                    target.api_key = api_key
-                target.placement = placement
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
                 await self._commit(session)

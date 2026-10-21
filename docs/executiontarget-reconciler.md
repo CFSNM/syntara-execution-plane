@@ -243,7 +243,7 @@ Algorithm:
 3. For each remaining Cluster, `targets.list_by_cluster(cluster.id)`
 4. Run the filter chain on each ExecutionTarget; partition into available /
    ineligible
-5. If `requirements.selectors` is empty, apply default routing on the
+5. If `requirements.selectors` is empty, apply composed default routing on the
    lifecycle-eligible set
 6. Otherwise keep only selector-matching ExecutionTargets
 7. Set `outcome` from whether `available_targets` is empty. Do not sort or
@@ -280,19 +280,20 @@ below. Empty selectors do not mean "match every label set."
 
 ## Default routing
 
-Every Cluster has a default ExecutionTarget (field
-`ExecutionTarget.is_default=True`). That target is the cold-start fallback for
-the Cluster.
+One Cluster is the global default (field `Cluster.is_default=True`), and that
+Cluster has a default ExecutionTarget (field `ExecutionTarget.is_default=True`).
+The two fields together form the composed default used for cold-start routing.
 
 When `requirements.selectors` is empty:
 
 1. Enumerate Clusters, then ExecutionTargets, as in Resolve.
 2. Consider only ExecutionTargets that pass the lifecycle filter (active and
    enabled) on eligible Clusters.
-3. If any of those targets has the field `is_default` set `True`, those
-   are the only default candidates.
-4. Otherwise every lifecycle-eligible ExecutionTarget is a candidate (MVP:
-   usually one namespace on the local Cluster).
+3. Keep only the ExecutionTarget for which both `target.cluster.is_default`
+   and `target.is_default` are `True`.
+4. If that composed default does not exist or is not available, return
+   `NO_MATCHING_TARGETS`; do not fall back to another Cluster, another target
+   default, or every lifecycle-eligible target.
 
 When selectors are present, only ExecutionTargets that match **all** requested
 keys are eligible. Non-matching cluster defaults are **not** mixed into that
@@ -300,8 +301,8 @@ set. Cold-start fallback is a Work Scheduler concern (AAP-92722): it may
 retry with empty selectors, or otherwise choose a cluster default after
 claim/provision fails.
 
-If no lifecycle-eligible ExecutionTarget exists on any considered Cluster,
-the outcome is `NO_MATCHING_TARGETS`.
+If no lifecycle-eligible composed default exists, the outcome is
+`NO_MATCHING_TARGETS`.
 
 ## Lifecycle filter
 
@@ -538,7 +539,7 @@ sequenceDiagram
     loop each remaining Cluster
         Note over R: list_by_cluster(cluster.id)
         alt selectors empty
-            Note over R: Default routing on active targets<br/>(is_default is True)
+            Note over R: Default routing on the active target where<br/>Cluster and ExecutionTarget is_default are True
         else selectors present
             Note over R: Exact AND match against target labels
         end

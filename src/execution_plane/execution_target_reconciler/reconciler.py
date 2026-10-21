@@ -112,6 +112,5 @@ class ExecutionTargetReconciler:
 
 
 def _default_routing(lifecycle_eligible: list[ExecutionTargetSnapshot]) -> list[ExecutionTargetSnapshot]:
-    """Prefer `is_default` targets when any exist; otherwise keep every lifecycle-eligible target."""
-    defaults = [target for target in lifecycle_eligible if target.is_default]
-    return defaults or lifecycle_eligible
+    """Use the default ExecutionTarget on the global default Cluster."""
+    return [target for target in lifecycle_eligible if target.cluster.is_default and target.is_default]

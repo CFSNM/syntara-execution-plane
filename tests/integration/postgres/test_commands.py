@@ -53,6 +53,7 @@ async def test_cluster_commands_only_change_binding_desired_state(command_client
         "endpoint": "https://cluster.test",
         "namespace": "ep",
         "credential": "private-secret",
+        "is_default": True,
     }
     created = await client.post("/v1/commands", json=command_message("cluster.register", payload))
     assert created.status_code == 202, created.text
@@ -60,6 +61,7 @@ async def test_cluster_commands_only_change_binding_desired_state(command_client
         binding = await session.get(ClusterBinding, ("ao", key))
         assert binding.status == "pending"
         assert binding.cluster_id is None
+        assert binding.is_default is True
     repeated = await client.post("/v1/commands", json=command_message("cluster.register", payload))
     assert repeated.status_code == 202
     conflict = await client.post(
@@ -282,7 +284,7 @@ async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(c
 
     client, sessions = command_client
     now = datetime.now(UTC)
-    cluster_id, foreign_id, target_id = uuid4(), uuid4(), uuid4()
+    cluster_id, foreign_id, target_id, replacement_id = uuid4(), uuid4(), uuid4(), uuid4()
     async with sessions.begin() as session:
         for resource_id, owner in ((cluster_id, "ao"), (foreign_id, "other")):
             session.add(
@@ -312,15 +314,19 @@ async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(c
         "/v1/commands", json=command_message("execution_target.register", {**payload, "cluster_id": str(foreign_id)})
     )
     assert foreign.status_code == 404
-    protected = await client.post(
+    default_created = await client.post(
         "/v1/commands", json=command_message("execution_target.register", {**payload, "is_default": True})
     )
-    assert protected.status_code == 409
-    created = await client.post("/v1/commands", json=command_message("execution_target.register", payload))
-    assert created.status_code == 202, created.text
+    assert default_created.status_code == 202, default_created.text
     read = await client.get(f"/v1/execution-targets/{target_id}")
+    assert read.json()["is_default"] is True
+    replacement_payload = {**payload, "resource_id": str(replacement_id), "name": "replacement"}
+    created = await client.post("/v1/commands", json=command_message("execution_target.register", replacement_payload))
+    assert created.status_code == 202, created.text
+    read = await client.get(f"/v1/execution-targets/{replacement_id}")
     assert read.status_code == 200
     assert read.json()["status"] == "active"
+    assert read.json()["is_default"] is False
     assert "secret" not in read.text
     update = await client.post(
         "/v1/commands",
@@ -333,6 +339,20 @@ async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(c
     read = await client.get(f"/v1/execution-targets/{target_id}")
     assert read.json()["placement"]["namespace"] == "new"
     assert read.json()["placement"]["node_selectors"] == ["env=test"]
+    promoted = await client.post(
+        "/v1/commands",
+        json=command_message("execution_target.update", {"resource_id": str(replacement_id), "is_default": True}),
+    )
+    assert promoted.status_code == 202
+    read = await client.get(f"/v1/execution-targets/{target_id}")
+    assert read.json()["is_default"] is False
+    read = await client.get(f"/v1/execution-targets/{replacement_id}")
+    assert read.json()["is_default"] is True
+    demoted = await client.post(
+        "/v1/commands",
+        json=command_message("execution_target.update", {"resource_id": str(replacement_id), "is_default": False}),
+    )
+    assert demoted.status_code == 409
     delete = await client.post(
         "/v1/commands", json=command_message("execution_target.delete", {"resource_id": str(target_id)})
     )
@@ -342,16 +362,16 @@ async def test_targets_enforce_cluster_ownership_defaults_and_domain_lifecycle(c
     assert read.json()["enabled"] is False
 
 
-async def test_failed_target_creation_rolls_back_and_default_targets_are_protected(command_client, monkeypatch):
+async def test_default_target_delete_is_rejected(command_client):
     from datetime import UTC, datetime
 
     from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.models.cluster import Cluster, ClusterStatus
-    from execution_plane.models.execution_target import BackendType, ExecutionTarget
+    from execution_plane.models.execution_target import BackendType
     from execution_plane.models.execution_target_placement import KubernetesPlacement
 
     client, sessions = command_client
-    now, cluster_id, target_id = datetime.now(UTC), uuid4(), uuid4()
+    now, cluster_id = datetime.now(UTC), uuid4()
     async with sessions.begin() as session:
         session.add(
             Cluster(
@@ -379,9 +399,36 @@ async def test_failed_target_creation_rolls_back_and_default_targets_are_protect
             created_by=uuid4(),
             placement=KubernetesPlacement(namespace="ep"),
         )
-    for kind in ("execution_target.update", "execution_target.delete"):
-        response = await client.post("/v1/commands", json=command_message(kind, {"resource_id": str(default.id)}))
-        assert response.status_code == 409
+    delete = await client.post(
+        "/v1/commands", json=command_message("execution_target.delete", {"resource_id": str(default.id)})
+    )
+    assert delete.status_code == 409
+
+
+async def test_failed_target_creation_rolls_back(command_client, monkeypatch):
+    from datetime import UTC, datetime
+
+    from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
+    from execution_plane.models.cluster import Cluster, ClusterStatus
+    from execution_plane.models.execution_target import ExecutionTarget
+
+    client, sessions = command_client
+    now, cluster_id, target_id = datetime.now(UTC), uuid4(), uuid4()
+    async with sessions.begin() as session:
+        session.add(
+            Cluster(
+                id=cluster_id,
+                name=str(cluster_id),
+                endpoint="https://cluster.test",
+                api_key="secret",
+                source_client_id="ao",
+                status=ClusterStatus.ACTIVE,
+                created_by=uuid4(),
+                updated_by=uuid4(),
+                created_at=now,
+                updated_at=now,
+            )
+        )
 
     async def fail_activation(self, target_id, actor) -> None:
         message = "simulated activation failure"

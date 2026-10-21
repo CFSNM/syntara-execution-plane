@@ -29,6 +29,7 @@ def cluster_snapshot_from_model(cluster: Cluster) -> ClusterSnapshot:
         labels=dict(cluster.labels),
         cluster_type=cluster.cluster_type,
         enabled=cluster.enabled and cluster.status is ClusterStatus.ACTIVE,
+        is_default=cluster.is_default,
     )
 
 

@@ -220,16 +220,8 @@ class _Store:
         _target_id: uuid.UUID,
         *,
         updated_by: uuid.UUID,
-        endpoint: str | None = None,
-        api_key: str | None = None,
-        placement: ExecutionTargetPlacement,
     ) -> ExecutionTarget:
-        self.updated = {
-            "updated_by": updated_by,
-            "endpoint": endpoint,
-            "api_key": api_key,
-            "placement": placement,
-        }
+        self.updated = {"updated_by": updated_by}
         return self.target
 
     async def list_for_client(

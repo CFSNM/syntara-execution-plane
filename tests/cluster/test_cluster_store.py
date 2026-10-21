@@ -9,8 +9,10 @@ from typing import Self
 import pytest
 
 from execution_plane.cluster.cluster_store import (
+    ClusterNotEligibleForDefaultError,
     ClusterNotFoundError,
     ClusterStore,
+    DefaultClusterError,
 )
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
@@ -19,7 +21,7 @@ from execution_plane.models.execution_target_placement import KubernetesPlacemen
 _DATABASE_UNAVAILABLE = "database unavailable"
 
 
-def _cluster(*, status: ClusterStatus = ClusterStatus.ACTIVE) -> Cluster:
+def _cluster(*, status: ClusterStatus = ClusterStatus.ACTIVE, is_default: bool = False) -> Cluster:
     now = datetime.now(UTC)
     return Cluster(
         id=uuid.uuid4(),
@@ -28,6 +30,7 @@ def _cluster(*, status: ClusterStatus = ClusterStatus.ACTIVE) -> Cluster:
         api_key="secret",
         status=status,
         enabled=status is not ClusterStatus.ERROR,
+        is_default=is_default,
         created_by=uuid.uuid4(),
         created_at=now,
         updated_by=uuid.uuid4(),
@@ -64,6 +67,9 @@ class _Result:
     def all(self) -> list[Cluster] | list[ExecutionTarget]:
         return self.clusters or self.targets
 
+    def scalar_one_or_none(self) -> Cluster | None:
+        return self.clusters[0] if len(self.clusters) == 1 else None
+
 
 class _Session:
     def __init__(
@@ -79,6 +85,9 @@ class _Session:
         self.deleted: Cluster | None = None
         self.added: Cluster | None = None
         self.rollbacks = 0
+        self.executed: list[object] = []
+        self.flushes: list[tuple[bool, bool]] = []
+        self.get_for_update: list[bool] = []
 
     async def __aenter__(self) -> Self:
         return self
@@ -89,11 +98,19 @@ class _Session:
     def add(self, cluster: Cluster) -> None:
         self.added = cluster
 
-    async def get(self, _model: object, _cluster_id: uuid.UUID, **_: object) -> Cluster | None:
+    async def get(self, _model: object, _cluster_id: uuid.UUID, **kwargs: object) -> Cluster | None:
+        self.get_for_update.append(bool(kwargs.get("with_for_update", False)))
         return self.cluster
 
-    async def execute(self, _statement: object) -> _Result:
+    async def execute(self, statement: object) -> _Result:
+        self.executed.append(statement)
         return self.result
+
+    async def flush(self) -> None:
+        assert self.cluster is not None
+        previous_default = self.result.scalar_one_or_none()
+        previous_is_default = previous_default.is_default if previous_default is not None else False
+        self.flushes.append((self.cluster.is_default, previous_is_default))
 
     async def commit(self) -> None:
         if self.fail_commit:
@@ -359,6 +376,70 @@ async def test_update_rolls_back_when_commit_fails() -> None:
     with pytest.raises(RuntimeError, match=_DATABASE_UNAVAILABLE):
         await store.update(cluster.id, updated_by=uuid.uuid4(), name="new-name")
 
+    assert session.rollbacks == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_set_default_demotes_the_previous_global_default_atomically() -> None:
+    cluster = _cluster()
+    previous_default = _cluster(is_default=True)
+    actor_id = uuid.uuid4()
+    session = _Session(cluster=cluster)
+    session.result = _Result([previous_default])
+    store = _store(session)
+
+    result = await store.set_default(cluster.id, actor_id)
+
+    assert result.is_default is True
+    assert cluster.is_default is True
+    assert previous_default.is_default is False
+    assert cluster.updated_by == actor_id
+    assert previous_default.updated_by == actor_id
+    assert session.get_for_update == [True]
+    assert session.flushes == [(False, False)]
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_set_default_rejects_an_inactive_cluster() -> None:
+    cluster = _cluster(status=ClusterStatus.DRAINING)
+    cluster.enabled = False
+    session = _Session(cluster=cluster)
+    store = _store(session)
+
+    with pytest.raises(ClusterNotEligibleForDefaultError):
+        await store.set_default(cluster.id, uuid.uuid4())
+
+    assert session.rollbacks == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_promotes_the_cluster_when_none_exists() -> None:
+    cluster = _cluster()
+    actor_id = uuid.uuid4()
+    session = _Session(cluster=cluster)
+    store = _store(session)
+
+    result = await store.ensure_default(cluster.id, actor_id)
+
+    assert result.is_default is True
+    assert cluster.updated_by == actor_id
+    assert session.flushes == []
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_request_delete_rejects_the_current_global_default() -> None:
+    cluster = _cluster(is_default=True)
+    session = _Session(cluster=cluster)
+    store = _store(session)
+
+    with pytest.raises(DefaultClusterError):
+        await store.request_delete(cluster.id, uuid.uuid4())
+
+    assert cluster.status is ClusterStatus.ACTIVE
     assert session.rollbacks == 1
     await store.close()
 

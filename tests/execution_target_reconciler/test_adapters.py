@@ -34,6 +34,7 @@ def _cluster(
     enabled: bool = True,
     labels: dict[str, str] | None = None,
     cluster_type: ClusterType = ClusterType.OPENSHIFT,
+    is_default: bool = True,
 ) -> Cluster:
     now = datetime.now(UTC)
     return Cluster(
@@ -43,6 +44,7 @@ def _cluster(
         api_key="secret",
         status=status,
         enabled=enabled,
+        is_default=is_default,
         cluster_type=cluster_type,
         labels=labels or {"region": "us-east-1"},
         created_by=uuid.uuid4(),
@@ -105,8 +107,11 @@ def _target_store(targets: list[ExecutionTarget]) -> ExecutionTargetStore:
 
 
 def test_cluster_snapshot_maps_non_active_to_disabled() -> None:
-    snapshot = cluster_snapshot_from_model(_cluster(status=ClusterStatus.DRAINING, enabled=True))
+    model = _cluster(status=ClusterStatus.DRAINING, enabled=True)
+    model.is_default = True
+    snapshot = cluster_snapshot_from_model(model)
     assert snapshot.enabled is False
+    assert snapshot.is_default is True
     assert snapshot.cluster_type is ClusterType.OPENSHIFT
     assert snapshot.labels == {"region": "us-east-1"}
 

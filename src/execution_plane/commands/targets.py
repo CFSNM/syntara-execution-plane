@@ -39,8 +39,6 @@ class TargetCommandHandler:
                 cluster = await session.get(Cluster, payload.cluster_id, with_for_update=True)
                 if cluster is None or cluster.source_client_id != context.client_id:
                     raise ResourceNotFoundError
-                if payload.is_default:
-                    raise DefaultExecutionTargetError
                 if await session.get(ExecutionTarget, resource_id) is not None:
                     raise ProtocolConflict
                 await target_commands.create(
@@ -56,20 +54,28 @@ class TargetCommandHandler:
                     target_id=resource_id,
                 )
                 await target_commands.activate(resource_id, SYSTEM_ACTOR)
+                if payload.is_default:
+                    await target_commands.set_default(resource_id, SYSTEM_ACTOR)
             else:
+                target = await session.get(ExecutionTarget, resource_id)
+                if target is None:
+                    raise ResourceNotFoundError
+                cluster = await session.get(Cluster, target.cluster_id, with_for_update=True)
+                if cluster is None or cluster.source_client_id != context.client_id:
+                    raise ResourceNotFoundError
+
                 target = await session.get(ExecutionTarget, resource_id, with_for_update=True)
                 if target is None:
                     raise ResourceNotFoundError
-                cluster = await session.get(Cluster, target.cluster_id)
-                if cluster is None or cluster.source_client_id != context.client_id:
-                    raise ResourceNotFoundError
-                if target.is_default:
+                if isinstance(payload, TargetDelete) and target.is_default:
                     raise DefaultExecutionTargetError
                 if isinstance(payload, TargetDelete):
                     await target_commands.request_delete(resource_id, SYSTEM_ACTOR)
                 else:
                     if any(getattr(payload, key) is None for key in payload.model_fields_set):
                         raise ProtocolConflict
+                    if payload.is_default is False and target.is_default:
+                        raise DefaultExecutionTargetError
                     if payload.placement is not None and payload.placement.type != target.placement.type:
                         raise ProtocolConflict
                     await target_commands.update(
@@ -85,4 +91,6 @@ class TargetCommandHandler:
                             payload.placement.model_dump(exclude_unset=True)
                         ),
                     )
+                    if payload.is_default:
+                        await target_commands.set_default(resource_id, SYSTEM_ACTOR)
         return HandlingResult(ResourceReference(kind="execution_target", resource_id=resource_id))

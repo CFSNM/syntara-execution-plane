@@ -38,6 +38,7 @@ AO endpoint: `GET /api/execution_plane/v1/execution_targets`
 | `last_ran_at` | datetime \| null |
 
 EP also has a `/v1/clusters` endpoint that is not currently proxied through AO.
+Cluster reads include the binding's `is_default` desired-state field.
 
 ## Pagination
 

@@ -136,6 +136,35 @@ def test_cluster_patch_keeps_explicit_null_and_omits_unchanged_fields():
     assert parsed.model_fields_set == {"resource_key", "desired_revision", "ca_certificate"}
 
 
+@pytest.mark.parametrize("payload_class", [clusters.ClusterRegister, clusters.ClusterProvision])
+def test_cluster_creation_commands_can_set_the_global_default(payload_class):
+    message = payload_class(
+        resource_key=UUID(RESOURCE_ID),
+        desired_revision=1,
+        name="workers",
+        endpoint="https://cluster.test",
+        namespace="ep",
+        credential="secret",
+        is_default=True,
+    ).to_message(source_id="ao", destination_id="ep", client_id="ao")
+
+    assert message.command.payload["is_default"] is True
+    parsed = CommandCatalog().validate(message)
+    assert parsed.is_default is True
+
+
+def test_cluster_patch_can_reassign_the_global_default() -> None:
+    message = clusters.ClusterUpdate(
+        resource_key=UUID(RESOURCE_ID),
+        desired_revision=2,
+        is_default=True,
+    ).to_message(source_id="ao", destination_id="ep", client_id="ao")
+
+    assert message.command.payload == {"resource_key": RESOURCE_ID, "desired_revision": 2, "is_default": True}
+    parsed = CommandCatalog().validate(message)
+    assert parsed.is_default is True
+
+
 def test_target_patch_retains_discriminator_without_resetting_placement_defaults():
     message = targets.TargetUpdate(
         resource_id=UUID(RESOURCE_ID),
@@ -149,6 +178,19 @@ def test_target_patch_retains_discriminator_without_resetting_placement_defaults
     assert isinstance(parsed, targets.TargetUpdate)
     assert isinstance(parsed.placement, targets.KubernetesPlacement)
     assert parsed.placement.model_fields_set == {"type", "namespace"}
+
+
+def test_target_patch_can_reassign_the_cluster_default() -> None:
+    message = targets.TargetUpdate(resource_id=UUID(RESOURCE_ID), is_default=True).to_message(
+        source_id="ao",
+        destination_id="ep",
+        client_id="ao",
+    )
+
+    assert message.command.payload == {"resource_id": RESOURCE_ID, "is_default": True}
+    parsed = CommandCatalog().validate(message)
+    assert isinstance(parsed, targets.TargetUpdate)
+    assert parsed.is_default is True
 
 
 def test_message_can_have_an_explicit_transport_identity():

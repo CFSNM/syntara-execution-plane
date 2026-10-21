@@ -10,16 +10,19 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from execution_plane.cluster.cluster_store import DefaultClusterError
 from execution_plane.commands.clusters import ClusterCommandHandler
 from execution_plane.commands.context import EPCommandContext
+from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.cluster_binding import ClusterBinding
-from execution_plane_client.commands.clusters import ClusterRegister, ClusterUpdate
+from execution_plane_client.commands.clusters import ClusterDelete, ClusterProvision, ClusterRegister, ClusterUpdate
 from execution_plane_client.protocol import MessageEnvelope
 
 
 class _Session:
-    def __init__(self, binding: ClusterBinding | None = None) -> None:
+    def __init__(self, binding: ClusterBinding | None = None, cluster: Cluster | None = None) -> None:
         self.binding = binding
+        self.cluster = cluster
         self.added: ClusterBinding | None = None
 
     def add(self, binding: ClusterBinding) -> None:
@@ -28,7 +31,9 @@ class _Session:
     async def execute(self, _statement: object) -> None:
         return None
 
-    async def get(self, _model: object, _key: tuple[str, object], **_kwargs: object) -> ClusterBinding | None:
+    async def get(self, model: object, _key: object, **_kwargs: object) -> ClusterBinding | Cluster | None:
+        if model is Cluster:
+            return self.cluster
         return self.binding
 
 
@@ -85,6 +90,32 @@ async def test_cluster_register_cleanses_internal_labels(monkeypatch: pytest.Mon
     assert session.added.labels == {"team": "platform"}
 
 
+@pytest.mark.parametrize("payload_class", [ClusterRegister, ClusterProvision])
+@pytest.mark.asyncio
+async def test_cluster_creation_persists_the_global_default(
+    monkeypatch: pytest.MonkeyPatch, payload_class: type[ClusterRegister]
+) -> None:
+    session = _Session()
+    payload = payload_class(
+        resource_key=uuid4(),
+        desired_revision=1,
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        namespace="ep",
+        credential="secret",
+        is_default=True,
+    )
+
+    await ClusterCommandHandler().handle(
+        Mock(spec=MessageEnvelope),
+        payload,
+        _context(monkeypatch, session),
+    )
+
+    assert session.added is not None
+    assert session.added.is_default is True
+
+
 @pytest.mark.asyncio
 async def test_cluster_update_cleanses_internal_labels(monkeypatch: pytest.MonkeyPatch) -> None:
     now = datetime.now(UTC)
@@ -115,3 +146,123 @@ async def test_cluster_update_cleanses_internal_labels(monkeypatch: pytest.Monke
     )
 
     assert binding.labels == {"team": "new"}
+
+
+@pytest.mark.asyncio
+async def test_cluster_update_reassigns_the_global_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+    key = uuid4()
+    binding = ClusterBinding(
+        client_id="ao",
+        source_integration_id=key,
+        revision=1,
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        namespace="ep",
+        credential="secret",
+        is_default=False,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _Session(binding)
+    payload = ClusterUpdate(
+        resource_key=key,
+        desired_revision=2,
+        is_default=True,
+    )
+
+    await ClusterCommandHandler().handle(
+        Mock(spec=MessageEnvelope),
+        payload,
+        _context(monkeypatch, session),
+    )
+
+    assert binding.is_default is True
+
+
+@pytest.mark.asyncio
+async def test_cluster_update_rejects_demoting_the_current_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+    key = uuid4()
+    cluster = Cluster(
+        id=uuid4(),
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        api_key="secret",
+        status=ClusterStatus.ACTIVE,
+        is_default=True,
+        created_by=uuid4(),
+        created_at=now,
+        updated_by=uuid4(),
+        updated_at=now,
+    )
+    binding = ClusterBinding(
+        client_id="ao",
+        source_integration_id=key,
+        revision=1,
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        namespace="ep",
+        credential="secret",
+        is_default=True,
+        cluster_id=cluster.id,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _Session(binding, cluster)
+    payload = ClusterUpdate(
+        resource_key=key,
+        desired_revision=2,
+        is_default=False,
+    )
+
+    with pytest.raises(DefaultClusterError):
+        await ClusterCommandHandler().handle(
+            Mock(spec=MessageEnvelope),
+            payload,
+            _context(monkeypatch, session),
+        )
+
+    assert binding.is_default is True
+
+
+@pytest.mark.asyncio
+async def test_cluster_delete_rejects_the_current_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+    key = uuid4()
+    cluster = Cluster(
+        id=uuid4(),
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        api_key="secret",
+        status=ClusterStatus.ACTIVE,
+        is_default=True,
+        created_by=uuid4(),
+        created_at=now,
+        updated_by=uuid4(),
+        updated_at=now,
+    )
+    binding = ClusterBinding(
+        client_id="ao",
+        source_integration_id=key,
+        revision=1,
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        namespace="ep",
+        credential="secret",
+        is_default=True,
+        cluster_id=cluster.id,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _Session(binding, cluster)
+    payload = ClusterDelete(resource_key=key, desired_revision=2)
+
+    with pytest.raises(DefaultClusterError):
+        await ClusterCommandHandler().handle(
+            Mock(spec=MessageEnvelope),
+            payload,
+            _context(monkeypatch, session),
+        )
+
+    assert binding.enabled is True

@@ -29,12 +29,17 @@ from typing import TYPE_CHECKING
 import pytest
 from kubernetes import client as kubernetes_client
 from kubernetes.client import BatchV1Api
+from sqlalchemy import delete, select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import col
 
 from execution_plane.cluster.cluster_registrar import ClusterRegistrar, NoopDiscoveryMechanism
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.cluster import Cluster, ClusterType
+from execution_plane.models.execution_target import ExecutionTarget
 from execution_plane.models.execution_target_placement import KubernetesPlacement
+from execution_plane.models.work_item import WorkItem
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -46,6 +51,24 @@ _EP_IT_CA_CERT = "EP_IT_K8S_CA_CERT"
 _DEFAULT_NAMESPACE = "execution-plane"
 _CLUSTER_NAME = "integration-test"
 _CLI_ACTOR_ID = uuid.UUID(int=0)
+
+
+async def _delete_fixture_cluster(database_url: str, cluster_id: uuid.UUID) -> None:
+    """Delete fixture-owned rows directly because the domain protects the default Cluster."""
+    engine = create_async_engine(database_url)
+    try:
+        async with async_sessionmaker(engine)() as session:
+            target_ids = select(col(ExecutionTarget.id)).where(col(ExecutionTarget.cluster_id) == cluster_id)
+            await session.execute(
+                update(WorkItem)
+                .where(col(WorkItem.execution_target_id).in_(target_ids))
+                .values(execution_target_id=None)
+            )
+            await session.execute(delete(ExecutionTarget).where(col(ExecutionTarget.cluster_id) == cluster_id))
+            await session.execute(delete(Cluster).where(col(Cluster.id) == cluster_id))
+            await session.commit()
+    finally:
+        await engine.dispose()
 
 
 def ep_cluster_configured() -> bool:
@@ -97,13 +120,12 @@ async def ep_cluster(migrated_database: str) -> AsyncGenerator[Cluster, None]:
         yield cluster
 
     finally:
-        if cluster is not None:
-            await cluster_store.request_delete(cluster.id, _CLI_ACTOR_ID)
-            for target in await target_store.list(cluster_id=cluster.id):
-                await target_store.finalize_delete(target.id)
-            await cluster_store.finalize_delete(cluster.id)
-        await cluster_store.close()
-        await target_store.close()
+        try:
+            if cluster is not None:
+                await _delete_fixture_cluster(migrated_database, cluster.id)
+        finally:
+            await cluster_store.close()
+            await target_store.close()
 
 
 @pytest.fixture(scope="session")

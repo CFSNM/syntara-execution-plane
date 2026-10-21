@@ -125,7 +125,7 @@ class TargetDelete(ResourceIdentity, CommandPayload):
 
 
 class TargetUpdate(ResourceIdentity, CommandPayload):
-    """Mutable target fields; cluster and default identity cannot be reassigned."""
+    """Mutable target fields; `is_default=true` promotes this target."""
 
     command_type: ClassVar[str] = "execution_target.update"
 
@@ -134,6 +134,7 @@ class TargetUpdate(ResourceIdentity, CommandPayload):
     placement: Placement | None = None
     credential: str | None = Field(default=None, repr=False)
     labels: dict[str, str] | None = None
+    is_default: StrictBool | None = None
 
     def _message_payload(self) -> dict[str, object]:
         payload = self.model_dump(mode="json", exclude_unset=True)

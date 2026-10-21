@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from execution_plane.cluster.cluster_store import DefaultClusterError
 from execution_plane.commands.context import EPCommandContext
 from execution_plane.labels import user_labels
+from execution_plane.models.cluster import Cluster
 from execution_plane.models.cluster_binding import ClusterBinding
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.clusters import ClusterDelete, ClusterRegister, ClusterUpdate
@@ -15,7 +17,17 @@ from execution_plane_client.errors import ProtocolConflict, UnsupportedCommand
 from execution_plane_client.handlers import HandlingResult
 from execution_plane_client.protocol import MessageEnvelope, ResourceReference
 
-_CONFIG_FIELDS = ("name", "endpoint", "namespace", "credential", "ca_certificate", "project_ids", "labels", "enabled")
+_CONFIG_FIELDS = (
+    "name",
+    "endpoint",
+    "namespace",
+    "credential",
+    "ca_certificate",
+    "project_ids",
+    "labels",
+    "enabled",
+    "is_default",
+)
 
 
 class ResourceNotFoundError(LookupError):
@@ -25,7 +37,7 @@ class ResourceNotFoundError(LookupError):
 class ClusterCommandHandler:
     """Retain resource revisions, never command identities or envelopes."""
 
-    async def handle(  # noqa: PLR0912 - Validate and apply binding revisions within one transaction.
+    async def handle(  # noqa: PLR0912, C901 - Validate and apply binding revisions within one transaction.
         self, message: MessageEnvelope, payload: CommandPayload, context: EPCommandContext
     ) -> HandlingResult:
         """Apply the former router's version and identity checks atomically."""
@@ -41,6 +53,13 @@ class ClusterCommandHandler:
             if isinstance(payload, ClusterUpdate | ClusterDelete):
                 if binding is None:
                     raise ResourceNotFoundError
+                protects_current_default = isinstance(payload, ClusterDelete) or (
+                    isinstance(payload, ClusterUpdate) and payload.is_default is False
+                )
+                if protects_current_default and binding.cluster_id is not None:
+                    cluster = await session.get(Cluster, binding.cluster_id)
+                    if cluster is not None and cluster.is_default:
+                        raise DefaultClusterError
                 values = {field: getattr(binding, field) for field in _CONFIG_FIELDS}
                 if isinstance(payload, ClusterUpdate):
                     values.update(payload.model_dump(exclude_unset=True, exclude={"resource_key", "desired_revision"}))

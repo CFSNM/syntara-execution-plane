@@ -30,6 +30,7 @@ def cluster_snapshot(
     enabled: bool = True,
     cluster_type: ClusterType = ClusterType.OPENSHIFT,
     cluster_id: uuid.UUID | None = None,
+    is_default: bool = False,
 ) -> ClusterSnapshot:
     """Build a Cluster snapshot with stable defaults."""
     return ClusterSnapshot(
@@ -38,6 +39,7 @@ def cluster_snapshot(
         labels=labels or {},
         cluster_type=cluster_type,
         enabled=enabled,
+        is_default=is_default,
     )
 
 

@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, Integer, String, UniqueConstraint
+from sqlalchemy import Column, Index, Integer, String, UniqueConstraint, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import DateTime
@@ -41,6 +41,7 @@ class Cluster(SQLModel, table=True):
     __tablename__ = "clusters"
     __table_args__ = (
         UniqueConstraint("source_client_id", "source_integration_id", name="uq_clusters_source_integration"),
+        Index("uq_clusters_default", "is_default", unique=True, postgresql_where=text("is_default = true")),
         {"schema": EP_SCHEMA},
     )
 
@@ -57,6 +58,7 @@ class Cluster(SQLModel, table=True):
         ),
     )
     enabled: bool = Field(default=True, nullable=False)
+    is_default: bool = Field(default=False, nullable=False)
     status_message: str | None = Field(default=None, nullable=True)
     api_key: str = Field(sa_column=Column(EncryptedCredential(), nullable=False), repr=False, exclude=True)
     ca_certificate: str | None = Field(

@@ -15,6 +15,7 @@ from execution_plane.execution_target.execution_target_store import (
     ExecutionTargetNotFoundError,
     ExecutionTargetStore,
     TargetNotActivatableError,
+    TargetNotEligibleForDefaultError,
 )
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
@@ -398,6 +399,58 @@ async def test_update_can_replace_api_key_and_rejects_missing_target() -> None:
     assert missing_session.rollbacks == 1
     await store.close()
     await missing_store.close()
+
+
+@pytest.mark.asyncio
+async def test_set_default_demotes_the_previous_default_atomically() -> None:
+    cluster = _cluster(status=ClusterStatus.ACTIVE)
+    target = _target()
+    previous_default = _target(is_default=True)
+    target.cluster_id = cluster.id
+    previous_default.cluster_id = cluster.id
+    actor_id = uuid.uuid4()
+
+    class _DefaultSession(_Session):
+        def __init__(self) -> None:
+            super().__init__(result=_Result(target), cluster=cluster)
+            self.previous_default = previous_default
+            self.flushes: list[tuple[bool, bool]] = []
+
+        async def execute(self, statement: object) -> _Result:
+            self.executed.append(statement)
+            return _Result(self.previous_default)
+
+        async def flush(self) -> None:
+            self.flushes.append((target.is_default, previous_default.is_default))
+
+    session = _DefaultSession()
+    store = _store(session)
+
+    result = await store.set_default(target.id, actor_id)
+
+    assert result.is_default is True
+    assert target.is_default is True
+    assert previous_default.is_default is False
+    assert target.updated_by == actor_id
+    assert previous_default.updated_by == actor_id
+    assert session.get_for_update == [False, True, True]
+    assert session.flushes == [(False, False)]
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_set_default_rejects_an_inactive_target() -> None:
+    cluster = _cluster(status=ClusterStatus.ACTIVE)
+    target = _target(status=TargetStatus.DEGRADED)
+    target.cluster_id = cluster.id
+    session = _Session(result=_Result(target), cluster=cluster)
+    store = _store(session)
+
+    with pytest.raises(TargetNotEligibleForDefaultError):
+        await store.set_default(target.id, uuid.uuid4())
+
+    assert session.rollbacks == 1
+    await store.close()
 
 
 @pytest.mark.asyncio

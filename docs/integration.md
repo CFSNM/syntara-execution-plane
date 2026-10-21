@@ -82,11 +82,11 @@ The outbound `work.execute.completed` command is documented separately under
 | --- | --- |
 | `work.execute` | `WorkExecute`: image, versioned invocation, optional output configuration; enqueue existing work lifecycle |
 | `command.cancel` | `target_command_id`: existing work UUID; request cancellation through `WorkStore` |
-| `cluster.register`, `cluster.provision` | `ClusterRegister`: `resource_key`, `desired_revision`, name, endpoint, namespace, credential, optional CA/project grants/labels/enabled; create or replace binding desired state |
-| `cluster.update` | `resource_key`, `desired_revision` and explicitly changed binding fields |
+| `cluster.register`, `cluster.provision` | `ClusterRegister`: `resource_key`, `desired_revision`, name, endpoint, namespace, credential, optional CA/project grants/labels/enabled/`is_default`; create or replace binding desired state |
+| `cluster.update` | `resource_key`, `desired_revision`, explicitly changed binding fields, and optional `is_default`; `true` atomically promotes the Cluster as the global default |
 | `cluster.delete` | `resource_key`, `desired_revision`; disable an existing binding for reconciliation |
-| `execution_target.register` | `resource_id`, owned physical `cluster_id`, name, backend, placement, endpoint, credential and labels; create an independent non-default target |
-| `execution_target.update` | `resource_id` and mutable target fields |
+| `execution_target.register` | `resource_id`, owned physical `cluster_id`, name, backend, placement, endpoint, credential, labels and optional `is_default`; create an independent target and optionally promote it as the Cluster default |
+| `execution_target.update` | `resource_id`, mutable target fields and optional `is_default`; `true` atomically promotes the target and demotes the previous default |
 | `execution_target.delete` | `resource_id`; request draining of a non-default target |
 
 Cluster commands preserve the existing binding revision rules: older revisions
@@ -95,11 +95,18 @@ state at the same revision conflicts. Partial updates preserve omitted fields;
 only CA and project grants can be explicitly cleared with null. The
 `ClusterBindingReconciler` creates/updates the physical cluster and its default
 target and handles deletion. Commands never invoke that provider work directly.
+Cluster desired state records the global default choice. The reconciler promotes
+an `ACTIVE` Cluster atomically and demotes the previous default; the current
+default cannot be explicitly demoted or deleted. If no default exists, the
+reconciler promotes the first Cluster that becomes eligible.
 
 Targets use existing resource identities and lifecycle operations, without an
-additional revision journal. Default targets are managed through their cluster
-binding and cannot be independently created, updated or deleted through target
-commands. Kubernetes placement patches retain omitted selectors/tolerations.
+additional revision journal. A Cluster binding seeds its initial default target,
+but later Cluster updates do not rewrite target-owned endpoint, credential,
+placement or label configuration. Target commands may update the current
+default's metadata and may promote another target as the default. The current
+default cannot be explicitly demoted or deleted; promote a replacement first.
+Kubernetes placement patches retain omitted selectors/tolerations.
 
 Unknown work cancellation returns 404. No cancellation command is retained for
 work that has not arrived. Cancellation of dispatched work is asynchronous;

@@ -107,6 +107,8 @@ class ClusterBindingReconciler:
             current.observed_revision = binding.revision
             current.status = status
             current.status_message = message
+            if status != "deleted":
+                current.is_default = binding.is_default
             current.updated_at = datetime.now(UTC)
             if status == "deleted":
                 current.credential = ""
@@ -131,7 +133,9 @@ class ClusterBindingReconciler:
                 source_integration_id=binding.source_integration_id,
                 source_revision=binding.revision,
                 project_ids=binding.project_ids,
+                is_default=binding.is_default,
             )
+            binding.is_default = created.is_default
             created = await self._store.update_source_binding(
                 created.id,
                 client_id=binding.client_id,
@@ -155,6 +159,7 @@ class ClusterBindingReconciler:
                 source_integration_id=binding.source_integration_id,
                 source_revision=binding.revision,
                 project_ids=binding.project_ids,
+                is_default=binding.is_default,
             )
         await self._registrar.sync_update(
             current.id,
@@ -162,8 +167,8 @@ class ClusterBindingReconciler:
             name=binding.name,
             endpoint=binding.endpoint,
             api_key=binding.credential,
-            placement=KubernetesPlacement(namespace=binding.namespace),
             labels=binding.labels,
+            is_default=binding.is_default,
         )
         current = await self._store.update_source_binding(
             current.id,

@@ -64,7 +64,39 @@ async def test_new_binding_namespace_becomes_typed_kubernetes_placement() -> Non
 
 
 @pytest.mark.asyncio
-async def test_binding_update_keeps_namespace_in_request_and_sends_typed_placement() -> None:
+async def test_new_binding_forwards_the_global_default_choice() -> None:
+    binding = _binding()
+    binding.is_default = True
+    cluster = _cluster()
+    cluster_store = AsyncMock()
+    cluster_store.update_source_binding.return_value = cluster
+    reconciler = ClusterBindingReconciler(AsyncMock(), AsyncMock(), cluster_store)
+    provision = AsyncMock(return_value=cluster)
+    reconciler._registrar.provision = provision
+
+    await reconciler._reconcile_upsert(binding, None)
+
+    assert provision.call_args.kwargs["is_default"] is True
+
+
+@pytest.mark.asyncio
+async def test_new_binding_normalizes_an_automatic_global_default() -> None:
+    binding = _binding()
+    binding.is_default = False
+    cluster = _cluster()
+    cluster.is_default = True
+    cluster_store = AsyncMock()
+    cluster_store.update_source_binding.return_value = cluster
+    reconciler = ClusterBindingReconciler(AsyncMock(), AsyncMock(), cluster_store)
+    reconciler._registrar.provision = AsyncMock(return_value=cluster)
+
+    await reconciler._reconcile_upsert(binding, None)
+
+    assert binding.is_default is True
+
+
+@pytest.mark.asyncio
+async def test_binding_update_does_not_rewrite_target_placement() -> None:
     binding = _binding()
     binding.labels = {"region": "eu-west"}
     cluster = _cluster()
@@ -77,9 +109,8 @@ async def test_binding_update_keeps_namespace_in_request_and_sends_typed_placeme
 
     status, cluster_id = await reconciler._reconcile_upsert(binding, cluster)
 
-    placement = sync_update.call_args.kwargs["placement"]
-    assert isinstance(placement, KubernetesPlacement)
-    assert placement.namespace == binding.namespace
+    assert "placement" not in sync_update.call_args.kwargs
     assert sync_update.call_args.kwargs["labels"] == binding.labels
+    assert sync_update.call_args.kwargs["is_default"] is False
     assert status == "ready"
     assert cluster_id == cluster.id

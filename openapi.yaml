@@ -349,6 +349,9 @@ components:
         enabled:
           type: boolean
           title: Enabled
+        is_default:
+          type: boolean
+          title: Is Default
         labels:
           additionalProperties:
             type: string
@@ -382,6 +385,7 @@ components:
       - status
       - status_message
       - enabled
+      - is_default
       - labels
       - project_ids
       - created_at
@@ -843,6 +847,10 @@ components:
           type: boolean
           title: Enabled
           default: true
+        is_default:
+          type: boolean
+          title: Is Default
+          default: false
       additionalProperties: false
       type: object
       required:
@@ -905,6 +913,10 @@ components:
           type: boolean
           title: Enabled
           default: true
+        is_default:
+          type: boolean
+          title: Is Default
+          default: false
       additionalProperties: false
       type: object
       required:
@@ -970,6 +982,11 @@ components:
           - type: boolean
           - type: 'null'
           title: Enabled
+        is_default:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Default
       additionalProperties: false
       type: object
       required:
@@ -1297,12 +1314,17 @@ components:
             type: object
           - type: 'null'
           title: Labels
+        is_default:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Default
       additionalProperties: false
       type: object
       required:
       - resource_id
       title: TargetUpdate
-      description: Mutable target fields; cluster and default identity cannot be reassigned.
+      description: Mutable target fields; `is_default=true` promotes this target.
     WorkExecute:
       properties:
         image:

@@ -65,6 +65,7 @@ class ClusterRead(BaseModel):
     status: str
     status_message: str | None
     enabled: bool
+    is_default: bool
     labels: dict[str, str]
     project_ids: list[uuid.UUID] | None
     created_at: datetime

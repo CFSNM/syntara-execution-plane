@@ -23,6 +23,7 @@ class ClusterRegister(ResourceRevision, CommandPayload):
     project_ids: list[UUID] | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     enabled: StrictBool = True
+    is_default: StrictBool = False
 
     @field_validator("endpoint")
     @classmethod
@@ -76,6 +77,7 @@ class ClusterUpdate(ResourceRevision, CommandPayload):
     project_ids: list[UUID] | None = None
     labels: dict[str, str] | None = None
     enabled: StrictBool | None = None
+    is_default: StrictBool | None = None
 
     def _message_payload(self) -> dict[str, object]:
         return self.model_dump(mode="json", exclude_unset=True)

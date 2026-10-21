@@ -44,6 +44,7 @@ which work can be executed.
 | `endpoint` | Cluster control-plane endpoint; unique across Clusters |
 | `status` | `REGISTERING`, `ACTIVE`, `DRAINING`, or `ERROR` |
 | `enabled` | Whether the Cluster may participate in selection or reconciliation |
+| `is_default` | Whether this is the protected global default Cluster |
 | `status_message` | Optional human-readable lifecycle or error detail |
 | `labels` | JSONB administration and routing metadata; never secret credentials |
 | `api_key` | Protected credential used to authenticate to the Cluster |
@@ -171,22 +172,29 @@ actions, such as claiming a WorkItem, use a well-known `SYSTEM` UUID as the
 
 The database and stores enforce the following invariants:
 
-1. Every ExecutionTarget has a non-null `cluster_id` referencing an existing
+1. Exactly one Cluster has `is_default=True`.
+2. A partial unique index on `execution_plane.clusters.is_default` where the
+   value is true enforces uniqueness of the global default.
+3. Promoting a Cluster atomically demotes the previous global default.
+4. The current global default cannot be explicitly demoted or deleted; promote a
+   replacement first.
+5. Every ExecutionTarget has a non-null `cluster_id` referencing an existing
    Cluster.
-2. Every `ACTIVE` Cluster has at least one ExecutionTarget.
-3. Every `ACTIVE` Cluster has exactly one `is_default=True` target.
-4. A partial unique index on `execution_targets.cluster_id` where `is_default`
+6. Every `ACTIVE` Cluster has at least one ExecutionTarget.
+7. Every `ACTIVE` Cluster has exactly one `is_default=True` target.
+8. A partial unique index on `execution_targets.cluster_id` where `is_default`
    is true enforces uniqueness of the default target.
-5. The default target cannot be updated or directly deleted through
-   `ExecutionTargetStore`. It is removed only as part of a Cluster
-   deletion, which removes all related targets.
-6. A normal target update cannot change `cluster_id` or `is_default`.
-7. A target is eligible for new work only when it and its Cluster are enabled
+9. The current default target can have its metadata updated, but it cannot be
+   explicitly demoted or directly deleted. It can be deleted only after another
+   target is promoted, or as part of a Cluster deletion.
+10. A normal target update cannot change `cluster_id`. Setting `is_default=true`
+   atomically promotes that target and demotes the Cluster's previous default.
+11. A target is eligible for new work only when it and its Cluster are enabled
    and their lifecycle states permit selection.
-8. A draining target cannot receive new work and cannot be physically deleted
+12. A draining target cannot receive new work and cannot be physically deleted
    until its active work has completed.
-9. A Cluster cannot be physically deleted while related targets remain.
-10. Every Cluster has a unique `endpoint`. Two Clusters cannot represent the
+13. A Cluster cannot be physically deleted while related targets remain.
+14. Every Cluster has a unique `endpoint`. Two Clusters cannot represent the
     same endpoint.
 
 The at-least-one-child invariant is represented by registration and lifecycle
@@ -195,6 +203,11 @@ the Cluster record in `REGISTERING` before discovery. `REGISTERING` may
 therefore temporarily have no targets, and is unavailable for selection.
 The default target is created through `ExecutionTargetStore`, and the
 Cluster cannot become `ACTIVE` until that target exists.
+
+After the initial target exists, target-owned endpoint, credential, placement
+and label fields are managed through ExecutionTarget commands. Cluster
+registration and binding updates do not rewrite those fields, even when the
+current default was promoted independently after Cluster provisioning.
 
 ## Registration and discovery operation
 
@@ -292,9 +305,10 @@ physical finalization.
 `ClusterStore.request_delete(cluster_id)` performs one transaction that:
 
 1. Loads the Cluster and verifies its existence.
-2. Handles repeated requests according to the API's idempotency convention.
-3. Sets the Cluster to `enabled=False` and `status=DRAINING`.
-4. Sets every associated target, including the default target, to
+2. Rejects deletion of the current global default Cluster.
+3. Handles repeated requests according to the API's idempotency convention.
+4. Sets the Cluster to `enabled=False` and `status=DRAINING`.
+5. Sets every associated target, including the default target, to
    `enabled=False` and `status=DRAINING`.
 5. Updates audit fields and commits.
 
