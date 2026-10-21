@@ -5,24 +5,28 @@ the source of truth for `container.proto`, generated protobuf messages, gRPC
 stubs, JSON encoding, and event validation. EP does not vendor or regenerate
 any of those files.
 
-`syntara-plugin-contracts` distributes the protocol source and schema bundle.
-`syntara-plugin-runtime` supplies the generated bindings and `ContainerClient`.
+`syntara-plugin-contracts` distributes the protocol source, schema bundle,
+generated bindings, and `ContainerClient`. The Python runtime APIs retain their
+`syntara_plugin.runtime` import path; there is no separate runtime distribution
+in the merged SDK.
 EP's adapter in [`workload.py`](../src/execution_plane/workload.py) connects
 that client to EP's cancellation, progress, and attempt lifecycle.
 
-## Installing the unpublished SDK
+## Installing the pinned SDK
 
-The packages are not yet published to PyPI. The `[tool.uv.sources]` entries in
-`pyproject.toml` explicitly select the SDK repository archive at immutable
-commit `28a5eb708123dd89cc3fcbc9f3e42ccfbc02db16`, with a package subdirectory
-for each distribution. `uv.lock` and `requirements.txt` record its SHA-256.
+The `[tool.uv.sources]` entry in `pyproject.toml` explicitly selects the SDK
+repository archive at immutable merged commit
+`ee52d18e8b2b3c21f45ec0a37175ee73070d5ca8`, using its
+`sdks/python/packages/contracts` subdirectory (`0.1.0a1`). `uv.lock` and
+`requirements.txt` record the archive's SHA-256. Installation does not depend
+on a PyPI release.
 `make install` works without a sibling SDK checkout. There is no private index
 or implicit fallback to a developer's filesystem.
 
 Use `uv` for installation; plain `pip install .` does not read `tool.uv.sources`.
 The exported requirements contain explicit source URLs for pip/Hermeto builds.
-After the corresponding SDK version is published, remove the source overrides,
-update the version pins, and regenerate both lockfiles and requirement exports.
+To adopt a reviewed published release later, remove the source override,
+update the version pin, and regenerate the lockfile and requirement exports.
 
 ## Command and workload data
 

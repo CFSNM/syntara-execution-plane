@@ -568,7 +568,6 @@ dependencies = [
     { name = "sqlmodel" },
     { name = "structlog" },
     { name = "syntara-plugin-contracts" },
-    { name = "syntara-plugin-runtime" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -603,8 +602,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "structlog", specifier = ">=24.0.0" },
-    { name = "syntara-plugin-contracts", url = "https://github.com/syntara-orchestration/syntara-plugin-sdk/archive/28a5eb708123dd89cc3fcbc9f3e42ccfbc02db16.tar.gz", subdirectory = "sdks/python/packages/contracts" },
-    { name = "syntara-plugin-runtime", url = "https://github.com/syntara-orchestration/syntara-plugin-sdk/archive/28a5eb708123dd89cc3fcbc9f3e42ccfbc02db16.tar.gz", subdirectory = "sdks/python/packages/runtime" },
+    { name = "syntara-plugin-contracts", url = "https://github.com/syntara-orchestration/syntara-plugin-sdk/archive/ee52d18e8b2b3c21f45ec0a37175ee73070d5ca8.tar.gz", subdirectory = "sdks/python/packages/contracts" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
 ]
 
@@ -1818,29 +1816,16 @@ wheels = [
 
 [[package]]
 name = "syntara-plugin-contracts"
-version = "0.1.0"
-source = { url = "https://github.com/syntara-orchestration/syntara-plugin-sdk/archive/28a5eb708123dd89cc3fcbc9f3e42ccfbc02db16.tar.gz", subdirectory = "sdks/python/packages/contracts" }
-dependencies = [
-    { name = "jsonschema" },
-]
-sdist = { hash = "sha256:ec18c8706f46fa01a2cc9f821e6afa8c983a7e8ca19d5d50deee7388853aa322" }
-
-[package.metadata]
-requires-dist = [{ name = "jsonschema", specifier = ">=4.23" }]
-
-[[package]]
-name = "syntara-plugin-runtime"
-version = "0.1.0"
-source = { url = "https://github.com/syntara-orchestration/syntara-plugin-sdk/archive/28a5eb708123dd89cc3fcbc9f3e42ccfbc02db16.tar.gz", subdirectory = "sdks/python/packages/runtime" }
+version = "0.1.0a1"
+source = { url = "https://github.com/syntara-orchestration/syntara-plugin-sdk/archive/ee52d18e8b2b3c21f45ec0a37175ee73070d5ca8.tar.gz", subdirectory = "sdks/python/packages/contracts" }
 dependencies = [
     { name = "grpcio" },
     { name = "jsonschema" },
     { name = "protobuf" },
     { name = "pydantic" },
     { name = "referencing" },
-    { name = "syntara-plugin-contracts" },
 ]
-sdist = { hash = "sha256:ec18c8706f46fa01a2cc9f821e6afa8c983a7e8ca19d5d50deee7388853aa322" }
+sdist = { hash = "sha256:b0c37331db17cd602692593d93849c353957cd80fe72c605d986602b8d5d93c8" }
 
 [package.metadata]
 requires-dist = [
@@ -1849,7 +1834,6 @@ requires-dist = [
     { name = "protobuf", specifier = ">=6.31.1" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "referencing", specifier = ">=0.37" },
-    { name = "syntara-plugin-contracts", specifier = ">=0.1.0" },
 ]
 
 [[package]]
