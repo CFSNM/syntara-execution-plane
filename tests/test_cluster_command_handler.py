@@ -11,7 +11,12 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from execution_plane.cluster.cluster_store import DefaultClusterError
-from execution_plane.commands.clusters import ClusterCommandHandler
+from execution_plane.commands.clusters import (
+    ClusterDeleteCommandHandler,
+    ClusterProvisionCommandHandler,
+    ClusterRegisterCommandHandler,
+    ClusterUpdateCommandHandler,
+)
 from execution_plane.commands.context import EPCommandContext
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.cluster_binding import ClusterBinding
@@ -80,7 +85,7 @@ async def test_cluster_register_cleanses_internal_labels(monkeypatch: pytest.Mon
         labels={"team": "platform", "_cluster_id": "spoofed", "_internal": "spoofed"},
     )
 
-    await ClusterCommandHandler().handle(
+    await ClusterRegisterCommandHandler().handle(
         Mock(spec=MessageEnvelope),
         payload,
         _context(monkeypatch, session),
@@ -90,10 +95,18 @@ async def test_cluster_register_cleanses_internal_labels(monkeypatch: pytest.Mon
     assert session.added.labels == {"team": "platform"}
 
 
-@pytest.mark.parametrize("payload_class", [ClusterRegister, ClusterProvision])
+@pytest.mark.parametrize(
+    ("payload_class", "handler_class"),
+    [
+        (ClusterRegister, ClusterRegisterCommandHandler),
+        (ClusterProvision, ClusterProvisionCommandHandler),
+    ],
+)
 @pytest.mark.asyncio
 async def test_cluster_creation_persists_the_global_default(
-    monkeypatch: pytest.MonkeyPatch, payload_class: type[ClusterRegister]
+    monkeypatch: pytest.MonkeyPatch,
+    payload_class: type[ClusterRegister],
+    handler_class: type[ClusterRegisterCommandHandler | ClusterProvisionCommandHandler],
 ) -> None:
     session = _Session()
     payload = payload_class(
@@ -106,7 +119,7 @@ async def test_cluster_creation_persists_the_global_default(
         is_default=True,
     )
 
-    await ClusterCommandHandler().handle(
+    await handler_class().handle(
         Mock(spec=MessageEnvelope),
         payload,
         _context(monkeypatch, session),
@@ -139,7 +152,7 @@ async def test_cluster_update_cleanses_internal_labels(monkeypatch: pytest.Monke
         labels={"team": "new", "_cluster_id": "spoofed", "_internal": "spoofed"},
     )
 
-    await ClusterCommandHandler().handle(
+    await ClusterUpdateCommandHandler().handle(
         Mock(spec=MessageEnvelope),
         payload,
         _context(monkeypatch, session),
@@ -171,7 +184,7 @@ async def test_cluster_update_reassigns_the_global_default(monkeypatch: pytest.M
         is_default=True,
     )
 
-    await ClusterCommandHandler().handle(
+    await ClusterUpdateCommandHandler().handle(
         Mock(spec=MessageEnvelope),
         payload,
         _context(monkeypatch, session),
@@ -217,7 +230,7 @@ async def test_cluster_update_rejects_demoting_the_current_default(monkeypatch: 
     )
 
     with pytest.raises(DefaultClusterError):
-        await ClusterCommandHandler().handle(
+        await ClusterUpdateCommandHandler().handle(
             Mock(spec=MessageEnvelope),
             payload,
             _context(monkeypatch, session),
@@ -259,7 +272,7 @@ async def test_cluster_update_rejects_disabling_the_current_default(monkeypatch:
     payload = ClusterUpdate(resource_key=key, desired_revision=2, enabled=False)
 
     with pytest.raises(DefaultClusterError):
-        await ClusterCommandHandler().handle(
+        await ClusterUpdateCommandHandler().handle(
             Mock(spec=MessageEnvelope),
             payload,
             _context(monkeypatch, session),
@@ -301,7 +314,7 @@ async def test_cluster_delete_rejects_the_current_default(monkeypatch: pytest.Mo
     payload = ClusterDelete(resource_key=key, desired_revision=2)
 
     with pytest.raises(DefaultClusterError):
-        await ClusterCommandHandler().handle(
+        await ClusterDeleteCommandHandler().handle(
             Mock(spec=MessageEnvelope),
             payload,
             _context(monkeypatch, session),

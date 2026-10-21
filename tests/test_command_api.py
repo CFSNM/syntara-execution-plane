@@ -10,7 +10,7 @@ import pytest
 
 from execution_plane.api.auth import ServiceIdentity, get_service_identity
 from execution_plane.api.main import create_app
-from execution_plane.commands.targets import TargetCommandHandler
+from execution_plane.commands.targets import TargetUpdateCommandHandler
 from execution_plane.execution_target.execution_target_store import TargetNotEligibleForDefaultError
 from execution_plane.work_item.work_item_store import WorkStore
 from execution_plane_client.commands.base import CommandPayload
@@ -129,7 +129,7 @@ async def test_ingress_maps_ineligible_default_promotion_to_conflict(monkeypatch
     async def reject_promotion(*_args: object, **_kwargs: object) -> None:
         raise TargetNotEligibleForDefaultError(uuid4())
 
-    monkeypatch.setattr(TargetCommandHandler, "handle", reject_promotion)
+    monkeypatch.setattr(TargetUpdateCommandHandler, "handle", reject_promotion)
     app = create_app()
     app.state.ep_engine = object()
     app.dependency_overrides[get_service_identity] = lambda: ServiceIdentity(

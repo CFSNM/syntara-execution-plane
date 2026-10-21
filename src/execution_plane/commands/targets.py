@@ -3,11 +3,14 @@
 from uuid import UUID
 
 from pydantic import TypeAdapter
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from execution_plane.commands.clusters import ResourceNotFoundError
 from execution_plane.commands.context import EPCommandContext
-from execution_plane.execution_target.execution_target_store import DefaultExecutionTargetError, ExecutionTargetStore
+from execution_plane.execution_target.execution_target_store import (
+    DefaultExecutionTargetError,
+    ExecutionTargetStore,
+)
 from execution_plane.models.cluster import Cluster
 from execution_plane.models.execution_target import BackendType, ExecutionTarget
 from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
@@ -20,77 +23,118 @@ from execution_plane_client.protocol import MessageEnvelope, ResourceReference
 SYSTEM_ACTOR = UUID(int=0)
 
 
-class TargetCommandHandler:
-    """Authorize ownership before applying target effects in one transaction."""
+def _validated_payload[T: CommandPayload](payload: CommandPayload, expected: type[T]) -> T:
+    if type(payload) is not expected:
+        raise UnsupportedCommand
+    return payload
 
-    async def handle(  # noqa: C901, PLR0912 - Authorize and apply target effects within one transaction.
+
+async def _owned_cluster(session: AsyncSession, cluster_id: UUID, client_id: str) -> Cluster:
+    cluster = await session.get(Cluster, cluster_id, with_for_update=True)
+    if cluster is None or cluster.source_client_id != client_id:
+        raise ResourceNotFoundError
+    return cluster
+
+
+async def _owned_target(session: AsyncSession, target_id: UUID, client_id: str) -> ExecutionTarget:
+    target = await session.get(ExecutionTarget, target_id)
+    if target is None:
+        raise ResourceNotFoundError
+    await _owned_cluster(session, target.cluster_id, client_id)
+    target = await session.get(ExecutionTarget, target_id, with_for_update=True)
+    if target is None:
+        raise ResourceNotFoundError
+    return target
+
+
+def _target_result(target_id: UUID) -> HandlingResult:
+    return HandlingResult(ResourceReference(kind="execution_target", resource_id=target_id))
+
+
+class TargetRegisterCommandHandler:
+    """Register one independently identified ExecutionTarget."""
+
+    async def handle(
         self, message: MessageEnvelope, payload: CommandPayload, context: EPCommandContext
     ) -> HandlingResult:
-        """Create, patch or drain one caller-identified execution target."""
+        """Create and activate a caller-owned target."""
         del message
-        if not isinstance(payload, TargetRegister | TargetUpdate | TargetDelete):
-            raise UnsupportedCommand
-        resource_id = payload.resource_id
+        command = _validated_payload(payload, TargetRegister)
         sessions = async_sessionmaker(context.engine, expire_on_commit=False)
         async with sessions.begin() as session:
+            await _owned_cluster(session, command.cluster_id, context.client_id)
+            if await session.get(ExecutionTarget, command.resource_id) is not None:
+                raise ProtocolConflict
             target_store = ExecutionTargetStore.from_transaction(session)
-            target_commands = target_store
-            if isinstance(payload, TargetRegister):
-                cluster = await session.get(Cluster, payload.cluster_id, with_for_update=True)
-                if cluster is None or cluster.source_client_id != context.client_id:
-                    raise ResourceNotFoundError
-                if await session.get(ExecutionTarget, resource_id) is not None:
-                    raise ProtocolConflict
-                await target_commands.create(
-                    cluster_id=payload.cluster_id,
-                    name=payload.name,
-                    backend_type=BackendType(payload.backend_type),
-                    endpoint=payload.endpoint,
-                    api_key=payload.credential,
-                    is_default=False,
-                    created_by=SYSTEM_ACTOR,
-                    placement=TypeAdapter(ExecutionTargetPlacement).validate_python(payload.placement.model_dump()),
-                    labels=payload.labels,
-                    target_id=resource_id,
-                )
-                await target_commands.activate(resource_id, SYSTEM_ACTOR)
-                if payload.is_default:
-                    await target_commands.set_default(resource_id, SYSTEM_ACTOR)
-            else:
-                target = await session.get(ExecutionTarget, resource_id)
-                if target is None:
-                    raise ResourceNotFoundError
-                cluster = await session.get(Cluster, target.cluster_id, with_for_update=True)
-                if cluster is None or cluster.source_client_id != context.client_id:
-                    raise ResourceNotFoundError
+            await target_store.create(
+                cluster_id=command.cluster_id,
+                name=command.name,
+                backend_type=BackendType(command.backend_type),
+                endpoint=command.endpoint,
+                api_key=command.credential,
+                is_default=False,
+                created_by=SYSTEM_ACTOR,
+                placement=TypeAdapter(ExecutionTargetPlacement).validate_python(command.placement.model_dump()),
+                labels=command.labels,
+                target_id=command.resource_id,
+            )
+            await target_store.activate(command.resource_id, SYSTEM_ACTOR)
+            if command.is_default:
+                await target_store.set_default(command.resource_id, SYSTEM_ACTOR)
+        return _target_result(command.resource_id)
 
-                target = await session.get(ExecutionTarget, resource_id, with_for_update=True)
-                if target is None:
-                    raise ResourceNotFoundError
-                if isinstance(payload, TargetDelete) and target.is_default:
-                    raise DefaultExecutionTargetError
-                if isinstance(payload, TargetDelete):
-                    await target_commands.request_delete(resource_id, SYSTEM_ACTOR)
-                else:
-                    if any(getattr(payload, key) is None for key in payload.model_fields_set):
-                        raise ProtocolConflict
-                    if payload.is_default is False and target.is_default:
-                        raise DefaultExecutionTargetError
-                    if payload.placement is not None and payload.placement.type != target.placement.type:
-                        raise ProtocolConflict
-                    await target_commands.update(
-                        resource_id,
-                        updated_by=SYSTEM_ACTOR,
-                        name=payload.name,
-                        endpoint=payload.endpoint,
-                        api_key=payload.credential,
-                        labels=payload.labels,
-                        placement=None
-                        if payload.placement is None
-                        else TypeAdapter(ExecutionTargetPlacement).validate_python(
-                            payload.placement.model_dump(exclude_unset=True)
-                        ),
-                    )
-                    if payload.is_default:
-                        await target_commands.set_default(resource_id, SYSTEM_ACTOR)
-        return HandlingResult(ResourceReference(kind="execution_target", resource_id=resource_id))
+
+class TargetUpdateCommandHandler:
+    """Patch one independently managed ExecutionTarget."""
+
+    async def handle(
+        self, message: MessageEnvelope, payload: CommandPayload, context: EPCommandContext
+    ) -> HandlingResult:
+        """Apply authorized metadata and default-promotion changes."""
+        del message
+        command = _validated_payload(payload, TargetUpdate)
+        sessions = async_sessionmaker(context.engine, expire_on_commit=False)
+        async with sessions.begin() as session:
+            target = await _owned_target(session, command.resource_id, context.client_id)
+            if any(getattr(command, key) is None for key in command.model_fields_set):
+                raise ProtocolConflict
+            if command.is_default is False and target.is_default:
+                raise DefaultExecutionTargetError
+            if command.placement is not None and command.placement.type != target.placement.type:
+                raise ProtocolConflict
+            target_store = ExecutionTargetStore.from_transaction(session)
+            await target_store.update(
+                command.resource_id,
+                updated_by=SYSTEM_ACTOR,
+                name=command.name,
+                endpoint=command.endpoint,
+                api_key=command.credential,
+                labels=command.labels,
+                placement=None
+                if command.placement is None
+                else TypeAdapter(ExecutionTargetPlacement).validate_python(
+                    command.placement.model_dump(exclude_unset=True)
+                ),
+            )
+            if command.is_default:
+                await target_store.set_default(command.resource_id, SYSTEM_ACTOR)
+        return _target_result(command.resource_id)
+
+
+class TargetDeleteCommandHandler:
+    """Request draining one independently managed ExecutionTarget."""
+
+    async def handle(
+        self, message: MessageEnvelope, payload: CommandPayload, context: EPCommandContext
+    ) -> HandlingResult:
+        """Drain a non-default caller-owned target."""
+        del message
+        command = _validated_payload(payload, TargetDelete)
+        sessions = async_sessionmaker(context.engine, expire_on_commit=False)
+        async with sessions.begin() as session:
+            target = await _owned_target(session, command.resource_id, context.client_id)
+            if target.is_default:
+                raise DefaultExecutionTargetError
+            target_store = ExecutionTargetStore.from_transaction(session)
+            await target_store.request_delete(command.resource_id, SYSTEM_ACTOR)
+        return _target_result(command.resource_id)

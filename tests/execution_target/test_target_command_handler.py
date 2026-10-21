@@ -11,7 +11,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from execution_plane.commands.context import EPCommandContext
-from execution_plane.commands.targets import TargetCommandHandler
+from execution_plane.commands.targets import (
+    TargetDeleteCommandHandler,
+    TargetRegisterCommandHandler,
+    TargetUpdateCommandHandler,
+)
 from execution_plane.execution_target.execution_target_store import (
     DefaultExecutionTargetError,
     ExecutionTargetStore,
@@ -195,7 +199,7 @@ async def test_target_register_promotes_the_new_target_as_default(monkeypatch: p
         is_default=True,
     )
 
-    await TargetCommandHandler().handle(
+    await TargetRegisterCommandHandler().handle(
         Mock(spec=MessageEnvelope),
         payload,
         _context(monkeypatch, session, store),
@@ -215,7 +219,7 @@ async def test_target_update_promotes_the_target_as_default(monkeypatch: pytest.
     store = _FakeStore(target=target)
     payload = TargetUpdate(resource_id=target.id, name="workers", is_default=True)
 
-    await TargetCommandHandler().handle(
+    await TargetUpdateCommandHandler().handle(
         Mock(spec=MessageEnvelope),
         payload,
         _context(monkeypatch, session, store),
@@ -234,7 +238,7 @@ async def test_target_update_allows_metadata_changes_to_the_current_default(
     session = _Session(cluster=cluster, target=target)
     store = _FakeStore(target=target)
 
-    await TargetCommandHandler().handle(
+    await TargetUpdateCommandHandler().handle(
         Mock(spec=MessageEnvelope),
         TargetUpdate(resource_id=target.id, name="renamed"),
         _context(monkeypatch, session, store),
@@ -252,7 +256,7 @@ async def test_target_update_rejects_demoting_the_current_default(monkeypatch: p
     store = _FakeStore(target=target)
 
     with pytest.raises(DefaultExecutionTargetError):
-        await TargetCommandHandler().handle(
+        await TargetUpdateCommandHandler().handle(
             Mock(spec=MessageEnvelope),
             TargetUpdate(resource_id=target.id, is_default=False),
             _context(monkeypatch, session, store),
@@ -270,7 +274,7 @@ async def test_target_delete_rejects_the_current_default(monkeypatch: pytest.Mon
     store = _FakeStore(target=target)
 
     with pytest.raises(DefaultExecutionTargetError):
-        await TargetCommandHandler().handle(
+        await TargetDeleteCommandHandler().handle(
             Mock(spec=MessageEnvelope),
             TargetDelete(resource_id=target.id),
             _context(monkeypatch, session, store),
