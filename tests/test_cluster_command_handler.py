@@ -227,6 +227,48 @@ async def test_cluster_update_rejects_demoting_the_current_default(monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_cluster_update_rejects_disabling_the_current_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime.now(UTC)
+    key = uuid4()
+    cluster = Cluster(
+        id=uuid4(),
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        api_key="secret",
+        status=ClusterStatus.ACTIVE,
+        is_default=True,
+        created_by=uuid4(),
+        created_at=now,
+        updated_by=uuid4(),
+        updated_at=now,
+    )
+    binding = ClusterBinding(
+        client_id="ao",
+        source_integration_id=key,
+        revision=1,
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        namespace="ep",
+        credential="secret",
+        is_default=True,
+        cluster_id=cluster.id,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _Session(binding, cluster)
+    payload = ClusterUpdate(resource_key=key, desired_revision=2, enabled=False)
+
+    with pytest.raises(DefaultClusterError):
+        await ClusterCommandHandler().handle(
+            Mock(spec=MessageEnvelope),
+            payload,
+            _context(monkeypatch, session),
+        )
+
+    assert binding.enabled is True
+
+
+@pytest.mark.asyncio
 async def test_cluster_delete_rejects_the_current_default(monkeypatch: pytest.MonkeyPatch) -> None:
     now = datetime.now(UTC)
     key = uuid4()

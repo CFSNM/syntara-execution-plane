@@ -171,6 +171,32 @@ def test_cluster_type_migration_adds_required_string_column() -> None:
     drop_column.assert_called_once_with("clusters", "cluster_type", schema="execution_plane")
 
 
+def test_cluster_default_migration_adds_flags_without_backfill() -> None:
+    """The green-field migration adds default flags without selecting an existing default."""
+    migration = importlib.import_module("execution_plane.migrations.versions.k7g8h9i0j1k2_add_cluster_default")
+
+    with (
+        patch.object(migration.op, "add_column") as add_column,
+        patch.object(migration.op, "create_index") as create_index,
+        patch.object(migration.op, "execute") as execute,
+    ):
+        migration.upgrade()
+
+    execute.assert_not_called()
+    assert [call.args[0] for call in add_column.call_args_list] == ["clusters", "cluster_bindings"]
+    for call in add_column.call_args_list:
+        default_column = call.args[1]
+        assert default_column.name == "is_default"
+        assert default_column.nullable is False
+        assert default_column.server_default is not None
+    create_index.assert_called_once()
+    index_args, index_kwargs = create_index.call_args
+    assert index_args == ("uq_clusters_default", "clusters", ["is_default"])
+    assert index_kwargs["unique"] is True
+    assert index_kwargs["schema"] == "execution_plane"
+    assert str(index_kwargs["postgresql_where"]) == "is_default = true"
+
+
 def test_cluster_migration_upgrade_records_required_schema_operations() -> None:
     """The upgrade operation creates ownership and lifecycle fields."""
     migration = importlib.import_module(

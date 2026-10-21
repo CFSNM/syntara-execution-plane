@@ -54,7 +54,7 @@ class ClusterCommandHandler:
                 if binding is None:
                     raise ResourceNotFoundError
                 protects_current_default = isinstance(payload, ClusterDelete) or (
-                    isinstance(payload, ClusterUpdate) and payload.is_default is False
+                    isinstance(payload, ClusterUpdate) and (payload.is_default is False or payload.enabled is False)
                 )
                 if protects_current_default and binding.cluster_id is not None:
                     cluster = await session.get(Cluster, binding.cluster_id)

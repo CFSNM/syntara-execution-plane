@@ -126,3 +126,54 @@ async def test_binding_reconciliation_reassigns_the_global_default(migrated_data
             assert second_cluster.is_default is True
     finally:
         await engine.dispose()
+
+
+async def test_cluster_default_promotion_updates_binding_desired_state(migrated_database: str) -> None:
+    engine = create_async_engine(migrated_database)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    actor_id = uuid4()
+    try:
+        async with (
+            ClusterStore.from_engine(engine) as store,
+            ExecutionTargetStore.from_engine(engine) as target_store,
+        ):
+            first_cluster = await _active_cluster(store, actor_id, f"first-{uuid4()}")
+            second_cluster = await _active_cluster(store, actor_id, f"second-{uuid4()}")
+            first_binding = _binding(name=f"first-{uuid4()}", is_default=False)
+            second_binding = _binding(name=f"second-{uuid4()}", is_default=False)
+            first_binding.cluster_id = first_cluster.id
+            second_binding.cluster_id = second_cluster.id
+
+            async with sessions.begin() as session:
+                session.add(first_binding)
+                session.add(second_binding)
+
+            await store.set_default(first_cluster.id, actor_id)
+            await store.set_default(second_cluster.id, actor_id)
+
+            async with sessions() as session:
+                demoted = await session.get(
+                    ClusterBinding,
+                    (first_binding.client_id, first_binding.source_integration_id),
+                )
+                promoted = await session.get(
+                    ClusterBinding,
+                    (second_binding.client_id, second_binding.source_integration_id),
+                )
+                assert demoted is not None
+                assert promoted is not None
+                assert demoted.is_default is False
+                assert promoted.is_default is True
+
+            registrar = ClusterRegistrar(store, target_store, NoopDiscoveryMechanism())
+            reconciler = ClusterBindingReconciler(sessions, registrar, store)
+            await reconciler._reconcile_upsert(demoted, first_cluster)
+
+            demoted_cluster = await store.get(first_cluster.id)
+            promoted_cluster = await store.get(second_cluster.id)
+            assert demoted_cluster is not None
+            assert promoted_cluster is not None
+            assert demoted_cluster.is_default is False
+            assert promoted_cluster.is_default is True
+    finally:
+        await engine.dispose()

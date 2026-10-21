@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 
@@ -262,6 +262,16 @@ class ClusterStore(StoreBase):
                     cluster.is_default = True
                     cluster.updated_by = updated_by
                     cluster.updated_at = now
+                await session.execute(
+                    update(ClusterBinding)
+                    .where(col(ClusterBinding.is_default).is_(True))
+                    .values(is_default=False, updated_at=now)
+                )
+                await session.execute(
+                    update(ClusterBinding)
+                    .where(col(ClusterBinding.cluster_id) == cluster.id)
+                    .values(is_default=True, updated_at=now)
+                )
                 await session.commit()
                 return self._without_secret(cluster)
             except IntegrityError as exc:

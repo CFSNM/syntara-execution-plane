@@ -18,7 +18,7 @@ EP = "execution_plane"
 
 
 def upgrade() -> None:
-    """Persist desired and observed global default state without losing a default."""
+    """Add global default state without backfilling a green-field database."""
     op.add_column(
         "clusters",
         sa.Column("is_default", sa.Boolean(), server_default=sa.false(), nullable=False),
@@ -28,35 +28,6 @@ def upgrade() -> None:
         "cluster_bindings",
         sa.Column("is_default", sa.Boolean(), server_default=sa.false(), nullable=False),
         schema=EP,
-    )
-    op.execute(
-        sa.text(
-            """
-            WITH chosen AS (
-                SELECT id, created_by
-                FROM execution_plane.clusters
-                ORDER BY (status = 'active') DESC, created_at, id
-                LIMIT 1
-            )
-            UPDATE execution_plane.clusters AS cluster
-            SET is_default = true,
-                updated_by = chosen.created_by,
-                updated_at = now()
-            FROM chosen
-            WHERE cluster.id = chosen.id
-            """
-        )
-    )
-    op.execute(
-        sa.text(
-            """
-            UPDATE execution_plane.cluster_bindings AS binding
-            SET is_default = true
-            FROM execution_plane.clusters AS cluster
-            WHERE binding.cluster_id = cluster.id
-              AND cluster.is_default = true
-            """
-        )
     )
     op.create_index(
         "uq_clusters_default",
