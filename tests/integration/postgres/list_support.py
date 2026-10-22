@@ -104,7 +104,7 @@ async def seed_list_dataset(session, path: str, db_url: str):
                     created_at=created_at,
                     updated_at=created_at,
                 )
-                values.update(updated_at=created_at)
+                values.update(updated_at=created_at, is_default=False)
             else:
                 row = ExecutionTarget(
                     id=resource_id,

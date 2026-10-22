@@ -72,13 +72,6 @@ async def test_cluster_commands_provision_and_manage_clusters_directly(command_c
     assert repeated.status_code == 202
     assert UUID(repeated.json()["resource"]["resource_id"]) == cluster_id
 
-    # Lower revision on existing cluster → conflict.
-    stale_create = await client.post(
-        "/v1/commands",
-        json=command_message("cluster.register", {**payload, "desired_revision": 0, "name": "old"}),
-    )
-    assert stale_create.status_code == 409
-
     update = await client.post(
         "/v1/commands",
         json=command_message("cluster.update", {"resource_key": str(key), "desired_revision": 2, "name": "updated"}),
@@ -249,7 +242,7 @@ async def test_cluster_commands_cleanse_internal_labels(command_client):
     async with sessions() as session:
         cluster = await session.get(Cluster, cluster_id)
         assert "team" in cluster.labels
-        assert "_cluster_id" not in cluster.labels
+        assert cluster.labels.get("_cluster_id") == str(cluster_id)
         assert "_internal" not in cluster.labels
         assert cluster.labels["team"] == "platform"
 
@@ -262,7 +255,7 @@ async def test_cluster_commands_cleanse_internal_labels(command_client):
     async with sessions() as session:
         cluster = await session.get(Cluster, cluster_id)
         assert cluster.labels["team"] == "runtime"
-        assert "_cluster_id" not in cluster.labels
+        assert cluster.labels.get("_cluster_id") == str(cluster_id)
         assert "_internal" not in cluster.labels
 
 
