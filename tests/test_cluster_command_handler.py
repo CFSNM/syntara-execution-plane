@@ -265,3 +265,63 @@ async def test_cluster_delete_rejects_the_current_default(monkeypatch: pytest.Mo
 
     with pytest.raises(DefaultClusterError):
         await ClusterDeleteCommandHandler().handle(Mock(spec=MessageEnvelope), payload, context)
+
+
+@pytest.mark.asyncio
+async def test_cluster_delete_raises_not_found_when_cluster_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from execution_plane.commands.clusters import ResourceNotFoundError
+
+    session = _Session()
+    mock_store = AsyncMock()
+    mock_store.get_by_source = AsyncMock(return_value=None)
+    monkeypatch.setattr("execution_plane.commands.clusters.ClusterStore.from_engine", lambda _e: mock_store)
+    monkeypatch.setattr("execution_plane.commands.clusters.ExecutionTargetStore.from_engine", lambda _e: AsyncMock())
+    monkeypatch.setattr("execution_plane.commands.clusters.ClusterRegistrar", lambda *_a, **_k: AsyncMock())
+
+    payload = ClusterDelete(resource_key=uuid.uuid4(), desired_revision=1)
+    context = _mock_context(monkeypatch, session)
+
+    with pytest.raises(ResourceNotFoundError):
+        await ClusterDeleteCommandHandler().handle(Mock(spec=MessageEnvelope), payload, context)
+
+
+@pytest.mark.asyncio
+async def test_cluster_delete_rejects_stale_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = uuid.uuid4()
+    cluster = _active_cluster()
+    cluster.source_integration_id = key
+    cluster.source_revision = 5
+    session = _Session(cluster)
+    mock_store = AsyncMock()
+    mock_store.get_by_source = AsyncMock(return_value=cluster)
+    monkeypatch.setattr("execution_plane.commands.clusters.ClusterStore.from_engine", lambda _e: mock_store)
+    monkeypatch.setattr("execution_plane.commands.clusters.ExecutionTargetStore.from_engine", lambda _e: AsyncMock())
+    monkeypatch.setattr("execution_plane.commands.clusters.ClusterRegistrar", lambda *_a, **_k: AsyncMock())
+
+    payload = ClusterDelete(resource_key=key, desired_revision=3)
+    context = _mock_context(monkeypatch, session)
+
+    with pytest.raises(ProtocolConflict):
+        await ClusterDeleteCommandHandler().handle(Mock(spec=MessageEnvelope), payload, context)
+
+
+@pytest.mark.asyncio
+async def test_cluster_delete_is_idempotent_for_same_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    key = uuid.uuid4()
+    cluster = _active_cluster()
+    cluster.source_integration_id = key
+    cluster.source_revision = 2
+    session = _Session(cluster)
+    mock_store = AsyncMock()
+    mock_store.get_by_source = AsyncMock(return_value=cluster)
+    monkeypatch.setattr("execution_plane.commands.clusters.ClusterStore.from_engine", lambda _e: mock_store)
+    monkeypatch.setattr("execution_plane.commands.clusters.ExecutionTargetStore.from_engine", lambda _e: AsyncMock())
+    monkeypatch.setattr("execution_plane.commands.clusters.ClusterRegistrar", lambda *_a, **_k: AsyncMock())
+
+    payload = ClusterDelete(resource_key=key, desired_revision=2)
+    context = _mock_context(monkeypatch, session)
+
+    result = await ClusterDeleteCommandHandler().handle(Mock(spec=MessageEnvelope), payload, context)
+
+    mock_store.request_delete.assert_not_called()
+    assert result.resource.resource_id == cluster.id
