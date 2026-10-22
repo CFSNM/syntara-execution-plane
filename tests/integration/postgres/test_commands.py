@@ -190,9 +190,9 @@ async def test_concurrent_cluster_creates_result_in_exactly_one_cluster(command_
     assert statuses in ([202, 202], [202, 409])
     async with sessions() as session:
         result = await session.execute(
-            select(Cluster).where(col(Cluster.source_client_id) == "ao").where(
-                col(Cluster.source_integration_id) == key
-            )
+            select(Cluster)
+            .where(col(Cluster.source_client_id) == "ao")
+            .where(col(Cluster.source_integration_id) == key)
         )
         clusters = list(result.scalars().all())
     assert len(clusters) == 1

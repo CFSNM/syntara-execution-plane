@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     import uuid
     from collections.abc import Sequence
 
+
 class _UnsetType:
     """Sentinel distinguishing 'not provided' from None in optional store parameters."""
 
@@ -157,9 +158,7 @@ class ClusterStore(StoreBase):
         """List clusters owned by the given client, with pagination and filtering."""
         statement = select(Cluster).where(col(Cluster.source_client_id) == client_id)
         statement = apply_list_filters(statement, filters, Cluster)
-        statement = apply_cursor_sort(
-            statement, Cluster, cursor, sort_field=sort_field, sort_direction=sort_direction
-        )
+        statement = apply_cursor_sort(statement, Cluster, cursor, sort_field=sort_field, sort_direction=sort_direction)
         async with self._session_context() as session:
             result = await session.execute(statement.limit(limit))
             return [self._without_secret(c) for c in result.scalars().all()]

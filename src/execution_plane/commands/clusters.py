@@ -202,7 +202,5 @@ class ClusterDeleteCommandHandler:
                 return _cluster_result(existing, command.desired_revision)
 
         cluster = await cluster_store.request_delete(existing.id, SYSTEM_ACTOR_ID)
-        await cluster_store.update(
-            existing.id, updated_by=SYSTEM_ACTOR_ID, source_revision=command.desired_revision
-        )
+        await cluster_store.update(existing.id, updated_by=SYSTEM_ACTOR_ID, source_revision=command.desired_revision)
         return _cluster_result(cluster, command.desired_revision)
