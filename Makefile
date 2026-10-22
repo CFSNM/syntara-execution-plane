@@ -1,4 +1,4 @@
-.PHONY: install test test-coverage coverage-combine test-integration lint format typecheck openapi migrate image secrets certs setup compose-up compose-down generate-token kind-target submit-work sync-requirements sync-rpms-lock-yaml
+.PHONY: install test test-coverage coverage-combine test-integration lint format typecheck openapi migrate image secrets certs setup compose-up compose-down generate-token kind-target register-kind-cluster submit-work sync-requirements sync-rpms-lock-yaml
 
 TEST_ARGS ?= --ignore=tests/integration
 COVERAGE_FILES ?= coverage-artifacts/*/.coverage
@@ -83,6 +83,9 @@ generate-token:
 
 kind-target:
 	uv run python tools/deploy_kind_execution_target.py
+
+register-kind-cluster:
+	uv run python tools/ci/register_kind_cluster.py
 
 submit-work:
 	uv run python tools/submit_work_item.py

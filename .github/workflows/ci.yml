@@ -171,6 +171,9 @@ jobs:
             printf "EP_IT_K8S_CA_CERT<<EOF\n%s\nEOF\n" "${ca_cert_pem}"
           } >> "$GITHUB_ENV"
 
+      - name: Register kind cluster in database
+        run: make register-kind-cluster
+
       - name: Run cluster dispatch integration tests
         run: make test-coverage TEST_ARGS='tests/integration/kind -m integration -v --timeout=600'
 
