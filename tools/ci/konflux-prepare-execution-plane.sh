@@ -128,15 +128,24 @@ _create_ao_credential() {
 
 _generate_tls() {
   local dir=$1
-  openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes \
-    -keyout "${dir}/ca.key" -out "${dir}/ca.pem" \
+  # Python 3.13 / OpenSSL 3 rejects CAs that omit keyUsage (X509_V_FLAG_X509_STRICT).
+  cat > "${dir}/ca.ext" <<EOF
+basicConstraints=critical,CA:TRUE
+keyUsage=critical,keyCertSign,cRLSign
+subjectKeyIdentifier=hash
+EOF
+  openssl req -newkey rsa:2048 -nodes -sha256 \
+    -keyout "${dir}/ca.key" -out "${dir}/ca.csr" \
     -subj "/CN=execution-plane-konflux-ca" >/dev/null 2>&1
+  openssl x509 -req -in "${dir}/ca.csr" -signkey "${dir}/ca.key" \
+    -days 365 -sha256 -out "${dir}/ca.pem" -extfile "${dir}/ca.ext" >/dev/null 2>&1
 
   openssl req -newkey rsa:2048 -nodes \
     -keyout "${dir}/tls.key" -out "${dir}/tls.csr" \
     -subj "/CN=execution-plane-api" >/dev/null 2>&1
   cat > "${dir}/tls.ext" <<EOF
 subjectAltName=DNS:execution-plane-api,DNS:execution-plane-api.${NAMESPACE},DNS:execution-plane-api.${NAMESPACE}.svc,DNS:execution-plane-api.${NAMESPACE}.svc.cluster.local,DNS:localhost,IP:127.0.0.1
+keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
 EOF
   openssl x509 -req -in "${dir}/tls.csr" -CA "${dir}/ca.pem" -CAkey "${dir}/ca.key" \
@@ -146,6 +155,7 @@ EOF
     -keyout "${dir}/client.key" -out "${dir}/client.csr" \
     -subj "/CN=execution-plane-callback" >/dev/null 2>&1
   cat > "${dir}/client.ext" <<EOF
+keyUsage=critical,digitalSignature
 extendedKeyUsage=clientAuth
 EOF
   openssl x509 -req -in "${dir}/client.csr" -CA "${dir}/ca.pem" -CAkey "${dir}/ca.key" \
