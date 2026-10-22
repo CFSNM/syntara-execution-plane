@@ -137,6 +137,13 @@ uv run python tools/submit_work_item.py --language bash --code 'echo hello' --wa
 
 Makefile aliases: `make generate-token`, `make kind-target`, and `make submit-work`.
 
+When AO's `make dev` runs EP on the host, use
+`make kind-target KIND_ARGS='--host-worker'` to register Kind's published host
+endpoint. Set `KIND_EXPERIMENTAL_PROVIDER=podman` for Podman,
+`EP_API_CA_FILE` to AO's `backend/.secrets/certs/ca.pem`, and
+`EP_AO_JWT_ISSUER` to AO's configured public URL. Add `--recreate` to
+`KIND_ARGS` when replacing the local Kind cluster.
+
 The Kubernetes base manifests are in `deploy/kubernetes/base`; provide the
 database URLs, AES key, AO JWT verification key, callback mTLS material, server
 TLS certificate, and AO callback/JWT issuer URLs as Kubernetes Secrets and a

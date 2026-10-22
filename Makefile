@@ -3,6 +3,7 @@
 TEST_ARGS ?= --ignore=tests/integration
 COVERAGE_FILES ?= coverage-artifacts/*/.coverage
 JUNIT_FILES ?= coverage-artifacts/*/pytest-results.xml
+KIND_ARGS ?=
 
 install:
 	uv sync --locked --all-groups
@@ -82,7 +83,7 @@ generate-token:
 	uv run python tools/generate_jwt_for_ep.py
 
 kind-target:
-	uv run python tools/deploy_kind_execution_target.py
+	uv run python tools/deploy_kind_execution_target.py $(KIND_ARGS)
 
 submit-work:
 	uv run python tools/submit_work_item.py

@@ -98,3 +98,4 @@ def test_cluster_tool_submits_binding_command_and_queries_resource(monkeypatch):
     assert message.command.command_type == "cluster.provision"
     assert message.command.payload["desired_revision"] == 4
     assert message.command.payload["resource_key"] == str(integration_id)
+    assert message.command.payload["is_default"] is True

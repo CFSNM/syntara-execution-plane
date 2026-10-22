@@ -240,10 +240,11 @@ def connect_worker_to_kind_network() -> str | None:
 
 
 def _ssl_context() -> ssl.SSLContext:
-    if not EP_CA_PATH.is_file():
-        msg = f"EP API CA not found at {EP_CA_PATH}; run ./tools/generate_certs.py first"
+    ca_path = Path(os.environ.get("EP_API_CA_FILE", str(EP_CA_PATH)))
+    if not ca_path.is_file():
+        msg = f"EP API CA not found at {ca_path}; set EP_API_CA_FILE or generate certificates"
         raise FileNotFoundError(msg)
-    return ssl.create_default_context(cafile=str(EP_CA_PATH))
+    return ssl.create_default_context(cafile=str(ca_path))
 
 
 def ep_request(method: str, url: str, token: str, body: dict[str, Any] | None = None) -> tuple[int, Any]:
@@ -322,6 +323,7 @@ def upsert_binding(
         "credential": credential,
         "ca_certificate": ca_certificate,
         "enabled": True,
+        "is_default": True,
         "labels": {"execution-plane.syntara.io/local": "kind"},
     }
     print(f"[INFO] Upserting cluster binding {source_integration_id} revision {revision}")
@@ -379,10 +381,11 @@ def list_execution_targets(api_url: str, token: str) -> list[dict[str, Any]]:
     if status >= HTTPStatus.BAD_REQUEST:
         msg = f"Listing execution targets failed ({status}): {payload}"
         raise RuntimeError(msg)
-    if not isinstance(payload, list):
+    resources = payload.get("resources") if isinstance(payload, dict) else None
+    if not isinstance(resources, list):
         msg = f"Unexpected execution-target response: {payload}"
         raise TypeError(msg)
-    return payload
+    return resources
 
 
 def source_integration_id(cluster_name: str) -> uuid.UUID:
@@ -436,6 +439,7 @@ def main() -> int:
     parser.add_argument("--api-url", default=os.environ.get("EP_API_URL", DEFAULT_API_URL))
     parser.add_argument("--wait-seconds", type=int, default=DEFAULT_WAIT_SECONDS)
     parser.add_argument("--recreate", action="store_true", help="Delete and recreate the kind cluster")
+    parser.add_argument("--host-worker", action="store_true", help="Use the host endpoint for AO's make dev")
     args = parser.parse_args()
 
     kubeconfig: Path | None = None
@@ -450,7 +454,12 @@ def main() -> int:
         credential = service_account_token(kubeconfig, args.namespace)
         ca_certificate = cluster_ca_pem(kubeconfig)
         endpoint = f"https://{node_internal_ip(kubeconfig)}:{CONTROL_PLANE_PORT}"
-        connect_worker_to_kind_network()
+        if args.host_worker:
+            endpoint = kubectl(
+                kubeconfig, "config", "view", "-o", "jsonpath={.clusters[0].cluster.server}"
+            ).stdout.strip()
+        else:
+            connect_worker_to_kind_network()
         print(f"[INFO] Kind API endpoint for the EP worker: {endpoint}")
         binding, targets = register_kind_binding(
             api_url=args.api_url,
@@ -474,7 +483,7 @@ def main() -> int:
             kubeconfig.unlink(missing_ok=True)
 
     print()
-    print(f"[INFO] Cluster binding {binding['source_integration_id']} is {binding['status']}")
+    print(f"[INFO] Cluster binding {binding['id']} is {binding['status']}")
     print(f"[INFO] Cluster id: {binding.get('cluster_id')}")
     print("[INFO] Execution targets:")
     print(json.dumps(targets, indent=2, default=str))
