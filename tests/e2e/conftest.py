@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,10 @@ LOGGER = logging.getLogger(__name__)
 _TERMINAL_FAILURE_STATUSES = frozenset({"failed", "cancelled", "completed_with_errors"})
 _DEFAULT_POLL_TIMEOUT_SECONDS = 180.0
 _DEFAULT_POLL_INTERVAL_SECONDS = 3.0
+_EP_JWT_AUDIENCE = "execution-plane"
+_EP_JWT_CLIENT_ID = "syntara-orchestration"
+_EP_JWT_ISSUER = "http://localhost:8000"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -145,6 +150,87 @@ class AoClient:
             f"last status={last.get('status')!r} error_details={last.get('error_details')!r}"
         )
 
+    def list_activities(self, execution_id: str) -> list[dict[str, Any]]:
+        body = self._json(self._client.get(f"{self.api}/executions/{execution_id}/activities", headers=self._headers()))
+        resources = body.get("resources") if isinstance(body, dict) else None
+        if not isinstance(resources, list):
+            pytest.fail(f"unexpected activities payload: {body!r}")
+        return [item for item in resources if isinstance(item, dict)]
+
+
+class EpClient:
+    """Talk to a live Execution Plane API with an AO-signed service JWT."""
+
+    def __init__(self, base_url: str, token: str, ca_file: Path | None) -> None:
+        """Keep a shared HTTPS client for work-item reads."""
+        self.base_url = base_url.rstrip("/")
+        self.api = f"{self.base_url}/v1"
+        verify: str | bool = str(ca_file) if ca_file is not None and ca_file.is_file() else False
+        self._client = httpx.Client(verify=verify, timeout=30.0)
+        self._token = token
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
+
+    def _json(self, response: httpx.Response) -> object:
+        if response.status_code >= 400:
+            pytest.fail(f"{response.request.method} {response.request.url} -> {response.status_code}: {response.text}")
+        if not response.content:
+            return None
+        return response.json()
+
+    def get_work_item(self, work_item_id: str) -> dict[str, Any] | None:
+        response = self._client.get(f"{self.api}/work-items/{work_item_id}", headers=self._headers())
+        if response.status_code == 404:
+            return None
+        body = self._json(response)
+        if not isinstance(body, dict):
+            pytest.fail(f"unexpected work-item payload: {body!r}")
+        return body
+
+    def list_work_items(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        params: dict[str, str | int] = {"limit": limit, "sort": "-created_at"}
+        if status:
+            params["status"] = status
+        body = self._json(self._client.get(f"{self.api}/work-items", headers=self._headers(), params=params))
+        resources = body.get("resources") if isinstance(body, dict) else None
+        if not isinstance(resources, list):
+            pytest.fail(f"unexpected work-item list payload: {body!r}")
+        return [item for item in resources if isinstance(item, dict)]
+
+
+def _mint_ep_service_token() -> str:
+    explicit = os.environ.get("EP_SERVICE_TOKEN")
+    if explicit:
+        return explicit
+    try:
+        import jwt
+    except ImportError:
+        pytest.fail("EP_SERVICE_TOKEN or PyJWT is required to query the Execution Plane")
+    key_path = Path(os.environ.get("EP_AO_JWT_PRIVATE_KEY_FILE") or _REPO_ROOT / ".secrets" / "jwt-primary.pem")
+    if not key_path.is_file():
+        pytest.fail(f"AO JWT private key not found at {key_path}; set EP_AO_JWT_PRIVATE_KEY_FILE or EP_SERVICE_TOKEN")
+    now = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "iss": os.environ.get("EP_AO_JWT_ISSUER", _EP_JWT_ISSUER),
+            "aud": os.environ.get("EP_SERVICE_JWT_AUDIENCE", _EP_JWT_AUDIENCE),
+            "client_id": os.environ.get("EP_AO_CLIENT_ID", _EP_JWT_CLIENT_ID),
+            "scope": "work-items:read",
+            "all_projects": True,
+            "iat": now,
+            "exp": now + timedelta(hours=8),
+        },
+        key_path.read_text(encoding="utf-8"),
+        algorithm="ES256",
+    )
+    if not token:
+        pytest.fail("Failed to mint an AO service token for the Execution Plane")
+    return token
+
 
 @pytest.fixture(scope="session")
 def ao_base_url() -> str:
@@ -168,6 +254,25 @@ def ao_admin_password() -> str:
 @pytest.fixture(scope="session")
 def ao_client(ao_base_url: str, ao_admin_password: str) -> Iterator[AoClient]:
     client = AoClient(ao_base_url, ao_admin_password)
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+@pytest.fixture(scope="session")
+def ep_base_url() -> str:
+    url = _optional_env("EP_API_URL")
+    if not url:
+        pytest.skip("EP_API_URL must be set to prove hello-world ran on the Execution Plane")
+    return url.rstrip("/")
+
+
+@pytest.fixture(scope="session")
+def ep_client(ep_base_url: str) -> Iterator[EpClient]:
+    ca_env = os.environ.get("EP_API_CA_FILE")
+    ca_file = Path(ca_env) if ca_env else _REPO_ROOT / ".secrets" / "certs" / "ca.pem"
+    client = EpClient(ep_base_url, _mint_ep_service_token(), ca_file)
     try:
         yield client
     finally:

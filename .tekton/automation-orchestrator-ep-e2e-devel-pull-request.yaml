@@ -468,8 +468,10 @@ spec:
             value: ssh-credentials-$(context.pipelineRun.name)
         taskSpec:
           description: |
-            Run tests/e2e against the AO API on the Kind cluster prepared by
-            prepare-execution-plane. Replaces the hello-world demo script.
+            Run tests/e2e against the AO and Execution Plane APIs on the Kind
+            cluster prepared by prepare-execution-plane. konflux-run-e2e.sh
+            port-forwards execution-plane-api and sets EP_API_URL. Replaces
+            the hello-world demo script.
           params:
             - name: ssh-credentials-secret
               type: string
