@@ -55,7 +55,6 @@ async def test_cluster_commands_provision_and_manage_clusters_directly(command_c
         "endpoint": "https://cluster.test",
         "namespace": "ep",
         "credential": "private-secret",
-        "is_default": True,
     }
     created = await client.post("/v1/commands", json=command_message("cluster.register", payload))
     assert created.status_code == 202, created.text
@@ -64,7 +63,6 @@ async def test_cluster_commands_provision_and_manage_clusters_directly(command_c
         cluster = await session.get(Cluster, cluster_id)
         assert cluster.status.value == "active"
         assert cluster.source_revision == 1
-        assert cluster.is_default is True
         assert "private-secret" not in repr(cluster)
 
     # Idempotent repeat at same revision.
