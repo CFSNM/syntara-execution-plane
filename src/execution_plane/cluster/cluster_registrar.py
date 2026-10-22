@@ -172,15 +172,42 @@ class ClusterRegistrar:
         source_revision: int = 0,
         project_ids: list[uuid.UUID] | None = None,
         is_default: bool = False,
+        ca_certificate: str | None = None,
     ) -> Cluster:
-        """Create a cluster and its sole default execution target from known values."""
+        """Create or update a cluster and its sole default execution target from known values."""
         existing = (
             await self._store.get_by_source(source_client_id, source_integration_id)
             if source_client_id is not None and source_integration_id is not None
             else await self._store.get_by_name(name)
         )
-        if existing is not None and (existing.status is ClusterStatus.DRAINING or not existing.enabled):
-            return await self._reactivate(existing, endpoint, api_key, created_by, labels, is_default=is_default)
+        if existing is not None:
+            if existing.status is ClusterStatus.DRAINING or not existing.enabled:
+                return await self._reactivate(
+                    existing,
+                    endpoint,
+                    api_key,
+                    created_by,
+                    labels,
+                    is_default=is_default,
+                    ca_certificate=ca_certificate,
+                    source_revision=source_revision,
+                    project_ids=project_ids,
+                )
+            # Existing active cluster: update without re-provisioning its targets.
+            await self._store.update(
+                existing.id,
+                updated_by=created_by,
+                name=name,
+                endpoint=endpoint,
+                api_key=api_key,
+                ca_certificate=ca_certificate,
+                labels=labels,
+                project_ids=project_ids,
+                source_revision=source_revision,
+            )
+            if is_default:
+                return await self._store.set_default(existing.id, created_by)
+            return await self._store.ensure_default(existing.id, created_by)
 
         cluster = await self._store.create(
             name,
@@ -193,6 +220,7 @@ class ClusterRegistrar:
             source_integration_id=source_integration_id,
             source_revision=source_revision,
             project_ids=project_ids,
+            ca_certificate=ca_certificate,
         )
         try:
             target = await self._execution_targets.create(
@@ -254,6 +282,9 @@ class ClusterRegistrar:
         labels: dict[str, str] | None = None,
         *,
         is_default: bool = False,
+        ca_certificate: str | None = None,
+        source_revision: int | None = None,
+        project_ids: list[uuid.UUID] | None = None,
     ) -> Cluster:
         """Reactivate a DRAINING cluster and its default target."""
         await self._store.reactivate(
@@ -261,7 +292,10 @@ class ClusterRegistrar:
             updated_by=updated_by,
             endpoint=endpoint,
             api_key=api_key,
+            ca_certificate=ca_certificate,
             labels=labels,
+            project_ids=project_ids,
+            source_revision=source_revision,
         )
         default_target = await self._default_target(cluster.id)
         if default_target is not None:
