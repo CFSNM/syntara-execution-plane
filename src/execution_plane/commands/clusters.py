@@ -2,6 +2,7 @@
 
 import hashlib
 import uuid
+from typing import TypedDict
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,6 +26,17 @@ from execution_plane_client.handlers import HandlingResult
 from execution_plane_client.protocol import MessageEnvelope, ResourceReference
 
 SYSTEM_ACTOR_ID = uuid.UUID(int=0)
+
+
+class _ClusterUpdateFields(TypedDict, total=False):
+    """Optional keyword arguments accepted by ClusterStore.update."""
+
+    name: str
+    endpoint: str
+    api_key: str
+    ca_certificate: str
+    labels: dict[str, str]
+    project_ids: list[uuid.UUID] | None
 
 
 class ResourceNotFoundError(LookupError):
@@ -114,9 +126,9 @@ async def _provision_cluster(command: ClusterRegister, context: EPCommandContext
     return _cluster_result(cluster, command.desired_revision)
 
 
-def _cluster_update_fields(command: ClusterUpdate) -> dict[str, object]:
+def _cluster_update_fields(command: ClusterUpdate) -> _ClusterUpdateFields:
     """Build the field-level kwargs for a ClusterStore.update call."""
-    kwargs: dict[str, object] = {}
+    kwargs: _ClusterUpdateFields = {}
     if command.name is not None:
         kwargs["name"] = command.name
     if command.endpoint is not None:

@@ -17,6 +17,7 @@ from execution_plane.query_sorting import apply_cursor_sort
 from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
+    import builtins
     import uuid
     from collections.abc import Sequence
 
@@ -73,7 +74,7 @@ class ClusterStore(StoreBase):
         source_client_id: str | None = None,
         source_integration_id: uuid.UUID | None = None,
         source_revision: int = 0,
-        project_ids: list[uuid.UUID] | None = None,
+        project_ids: builtins.list[uuid.UUID] | None = None,
         ca_certificate: str | None = None,
     ) -> Cluster:
         """Persist a new Cluster in REGISTERING state."""
@@ -134,7 +135,7 @@ class ClusterStore(StoreBase):
             cluster = result.scalar_one_or_none()
             return None if cluster is None else self._without_secret(cluster)
 
-    async def list(self, *, status: ClusterStatus | None = None, enabled: bool | None = None) -> list[Cluster]:
+    async def list(self, *, status: ClusterStatus | None = None, enabled: bool | None = None) -> builtins.list[Cluster]:
         """List Clusters for administrative or recovery workflows."""
         statement = select(Cluster)
         if status is not None:
@@ -189,7 +190,7 @@ class ClusterStore(StoreBase):
         api_key: str | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
-        project_ids: _UnsetType | list[uuid.UUID] | None = _UNSET,
+        project_ids: _UnsetType | builtins.list[uuid.UUID] | None = _UNSET,
         source_revision: int | None = None,
     ) -> Cluster:
         """Update mutable cluster fields."""
@@ -208,7 +209,7 @@ class ClusterStore(StoreBase):
                     cluster.ca_certificate = ca_certificate
                 if labels is not None:
                     cluster.labels = merge_user_labels(cluster.labels, labels)
-                if project_ids is not _UNSET:
+                if not isinstance(project_ids, _UnsetType):
                     cluster.project_ids = project_ids
                 if source_revision is not None:
                     cluster.source_revision = source_revision
@@ -285,7 +286,7 @@ class ClusterStore(StoreBase):
         api_key: str | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
-        project_ids: _UnsetType | list[uuid.UUID] | None = _UNSET,
+        project_ids: _UnsetType | builtins.list[uuid.UUID] | None = _UNSET,
         source_revision: int | None = None,
     ) -> Cluster:
         """Re-enable a DRAINING cluster and transition it back to ACTIVE."""
@@ -305,7 +306,7 @@ class ClusterStore(StoreBase):
                     cluster.ca_certificate = ca_certificate
                 if labels is not None:
                     cluster.labels = merge_user_labels(cluster.labels, labels)
-                if project_ids is not _UNSET:
+                if not isinstance(project_ids, _UnsetType):
                     cluster.project_ids = project_ids
                 if source_revision is not None:
                     cluster.source_revision = source_revision
