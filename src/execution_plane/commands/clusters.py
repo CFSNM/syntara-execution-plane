@@ -2,7 +2,6 @@
 
 import hashlib
 import uuid
-from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -12,7 +11,7 @@ from execution_plane.cluster.cluster_store import ClusterStore, DefaultClusterEr
 from execution_plane.commands.context import EPCommandContext
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.labels import user_labels
-from execution_plane.models.cluster import Cluster, ClusterStatus
+from execution_plane.models.cluster import Cluster
 from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane_client.commands.base import CommandPayload
 from execution_plane_client.commands.clusters import (
@@ -115,6 +114,24 @@ async def _provision_cluster(command: ClusterRegister, context: EPCommandContext
     return _cluster_result(cluster, command.desired_revision)
 
 
+def _cluster_update_fields(command: ClusterUpdate) -> dict[str, object]:
+    """Build the field-level kwargs for a ClusterStore.update call."""
+    kwargs: dict[str, object] = {}
+    if command.name is not None:
+        kwargs["name"] = command.name
+    if command.endpoint is not None:
+        kwargs["endpoint"] = command.endpoint
+    if command.credential is not None:
+        kwargs["api_key"] = command.credential
+    if command.ca_certificate is not None:
+        kwargs["ca_certificate"] = command.ca_certificate
+    if command.labels is not None:
+        kwargs["labels"] = user_labels(command.labels)
+    if "project_ids" in command.model_fields_set:
+        kwargs["project_ids"] = command.project_ids
+    return kwargs
+
+
 class ClusterUpdateCommandHandler:
     """Apply a partial update to an existing Cluster."""
 
@@ -136,30 +153,22 @@ class ClusterUpdateCommandHandler:
                 if command.desired_revision == existing.source_revision:
                     return _cluster_result(existing, command.desired_revision)
                 raise ProtocolConflict
-            if command.enabled is False or command.is_default is False:
-                if existing.is_default:
-                    raise DefaultClusterError
+            if (command.enabled is False or command.is_default is False) and existing.is_default:
+                raise DefaultClusterError
 
         if command.enabled is False:
             cluster = await cluster_store.request_delete(existing.id, SYSTEM_ACTOR_ID)
-            await cluster_store.update(existing.id, updated_by=SYSTEM_ACTOR_ID, source_revision=command.desired_revision)
+            await cluster_store.update(
+                existing.id, updated_by=SYSTEM_ACTOR_ID, source_revision=command.desired_revision
+            )
             return _cluster_result(cluster, command.desired_revision)
 
-        update_kwargs: dict = {"updated_by": SYSTEM_ACTOR_ID, "source_revision": command.desired_revision}
-        if command.name is not None:
-            update_kwargs["name"] = command.name
-        if command.endpoint is not None:
-            update_kwargs["endpoint"] = command.endpoint
-        if command.credential is not None:
-            update_kwargs["api_key"] = command.credential
-        if command.ca_certificate is not None:
-            update_kwargs["ca_certificate"] = command.ca_certificate
-        if command.labels is not None:
-            update_kwargs["labels"] = user_labels(command.labels)
-        if "project_ids" in command.model_fields_set:
-            update_kwargs["project_ids"] = command.project_ids
-
-        cluster = await cluster_store.update(existing.id, **update_kwargs)
+        cluster = await cluster_store.update(
+            existing.id,
+            updated_by=SYSTEM_ACTOR_ID,
+            source_revision=command.desired_revision,
+            **_cluster_update_fields(command),
+        )
 
         if command.is_default is True:
             cluster = await cluster_store.set_default(existing.id, SYSTEM_ACTOR_ID)
@@ -193,5 +202,7 @@ class ClusterDeleteCommandHandler:
                 return _cluster_result(existing, command.desired_revision)
 
         cluster = await cluster_store.request_delete(existing.id, SYSTEM_ACTOR_ID)
-        await cluster_store.update(existing.id, updated_by=SYSTEM_ACTOR_ID, source_revision=command.desired_revision)
+        await cluster_store.update(
+            existing.id, updated_by=SYSTEM_ACTOR_ID, source_revision=command.desired_revision
+        )
         return _cluster_result(cluster, command.desired_revision)

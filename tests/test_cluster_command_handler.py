@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Self
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -15,16 +15,15 @@ from execution_plane.commands.clusters import (
     ClusterDeleteCommandHandler,
     ClusterProvisionCommandHandler,
     ClusterRegisterCommandHandler,
-    ClusterUpdateCommandHandler,
 )
 from execution_plane.commands.context import EPCommandContext
 from execution_plane.models.cluster import Cluster, ClusterStatus
-from execution_plane_client.commands.clusters import ClusterDelete, ClusterProvision, ClusterRegister, ClusterUpdate
+from execution_plane_client.commands.clusters import ClusterDelete, ClusterProvision, ClusterRegister
 from execution_plane_client.errors import ProtocolConflict
 from execution_plane_client.protocol import MessageEnvelope
 
 
-def _active_cluster(is_default: bool = False) -> Cluster:
+def _active_cluster(*, is_default: bool = False) -> Cluster:
     now = datetime.now(UTC)
     return Cluster(
         id=uuid.uuid4(),

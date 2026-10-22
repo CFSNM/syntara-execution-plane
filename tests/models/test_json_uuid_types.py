@@ -2,7 +2,6 @@
 
 import uuid
 
-import pytest
 from sqlalchemy.dialects import postgresql
 
 from execution_plane.models.cluster import Cluster

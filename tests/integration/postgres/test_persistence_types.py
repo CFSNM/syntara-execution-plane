@@ -77,7 +77,7 @@ async def test_project_scope_and_status_round_trip_through_postgresql() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mapped_rows_reload_project_ids_and_work_item_status() -> None:  # noqa: PLR0915 - verifies the DB lifecycle end to end
+async def test_mapped_rows_reload_project_ids_and_work_item_status() -> None:
     """Read project UUIDs and a WorkItem enum back through mapped EP rows."""
     database_url = os.environ.get("EP_TEST_DATABASE_URL")
     if not database_url:
@@ -138,7 +138,7 @@ async def test_mapped_rows_reload_project_ids_and_work_item_status() -> None:  #
         )
         dispatched = await work_store.get(
             work_item_id,
-            client_id=binding_key[0],
+            client_id="postgres-type-test",
         )
         assert dispatched is not None
         assert dispatched.status is WorkItemStatus.DISPATCHED

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 
@@ -20,7 +20,11 @@ if TYPE_CHECKING:
     import uuid
     from collections.abc import Sequence
 
-_UNSET = object()
+class _UnsetType:
+    """Sentinel distinguishing 'not provided' from None in optional store parameters."""
+
+
+_UNSET = _UnsetType()
 
 
 class ClusterNotFoundError(LookupError):
@@ -186,7 +190,7 @@ class ClusterStore(StoreBase):
         api_key: str | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
-        project_ids: Any = _UNSET,
+        project_ids: _UnsetType | list[uuid.UUID] | None = _UNSET,
         source_revision: int | None = None,
     ) -> Cluster:
         """Update mutable cluster fields."""
@@ -282,7 +286,7 @@ class ClusterStore(StoreBase):
         api_key: str | None = None,
         ca_certificate: str | None = None,
         labels: dict[str, str] | None = None,
-        project_ids: Any = _UNSET,
+        project_ids: _UnsetType | list[uuid.UUID] | None = _UNSET,
         source_revision: int | None = None,
     ) -> Cluster:
         """Re-enable a DRAINING cluster and transition it back to ACTIVE."""
